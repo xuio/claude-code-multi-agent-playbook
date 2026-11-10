@@ -129,3 +129,20 @@ Six fixes from one coordinator's notes after two compactions and a planning roun
 - Tests: 100 for the hooks, 31 for the tools, 74 for the plugin. None of this has yet run in a
   long live session; the order of queued messages after a compaction, and whether 1.5 s is
   enough for one to start its turn, cannot be tested outside one.
+
+## 2026-11-10: self-compact 0.6.2
+
+From a third independent review of 0.6.1's resume-prompt code.
+
+- `plugins/self-compact/` 0.6.2, fixed: a resume prompt that was sent can wait behind another
+  turn. Where the host asks the plugin again before the prompt starts, the plugin counted every
+  tool call since the compaction a second time. A turn of 9 calls, then one call in the next
+  turn, dropped a prompt it had just decided to send, and the agent sat idle (reproduced in the
+  test engine, not seen in use; the count came with 0.6.1). Only the calls made after the
+  prompt was sent count now.
+- Tests: 78 for the plugin. Two are for the fix. Two are for 0.6.1's order "send the prompt,
+  then write the log line": a request that drops the prompt while that line is being written
+  finds it sent and marks it. No test failed without that order before.
+- Docs: the starter kit's checklist after a compaction takes 7 to 9 tool calls, more when a
+  watcher or the timer has to be started again (the texts said 7 or 8). The default of 10 for
+  `resumeSkipAfterToolCalls` stays; raise it if your routine is longer.

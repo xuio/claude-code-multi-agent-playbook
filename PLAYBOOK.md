@@ -665,7 +665,7 @@ to a successor coordinator; it continues through compactions `[U]`.
   starts the next turn before the resume prompt, the plugin holds the resume prompt back. It
   sends it after that turn only if the turn made fewer than 10 tool calls (option
   `resumeSkipAfterToolCalls`; 0 = always send; keep it above the calls your orientation after
-  a compaction takes, 7 or 8 with the starter kit's checklist). The coordinator still acts on the carry's next step at once. A `SessionStart` hook with the
+  a compaction takes, 7 to 9 with the starter kit's checklist). The coordinator still acts on the carry's next step at once. A `SessionStart` hook with the
   matcher `compact` (`hooks/after-compaction.example.txt`) prints the reminder to read the
   digest, and `hooks/compaction_log.py` logs every compaction with its trigger, which shows how
   often the automatic one still fires.

@@ -259,7 +259,8 @@ a job that has to be started again needs its command in the carry (R-loop-15).
 From self-compact 0.6.1, when another message starts the next turn first, the plugin holds the
 resume prompt back. It sends it after that turn only if the turn made fewer than 10 tool calls
 (`resumeSkipAfterToolCalls`; 0 = always send). Keep that number above the calls your orientation
-takes (section 5.1: 7 or 8), or a turn that only oriented drops the prompt. Act on the carry's next step
+takes (section 5.1: 7 to 9, more when a watcher or the timer has to be started again), or a
+turn that only oriented drops the prompt. Act on the carry's next step
 at once either way.
 
 The compaction instructions themselves are a fixed text kept in a project file: this cycle only,
