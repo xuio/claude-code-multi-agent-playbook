@@ -625,8 +625,11 @@ to a successor coordinator; it continues through compactions `[U]`.
   boundaries go stale as the file grows `[I]`.
 - Check: the duties registry has a row for it; hints protocol at the top of the hints file.
 - Tools: the `self-compact` plugin (`plugins/self-compact/`) gives the coordinator the compaction
-  as a tool call with `instructions`, `carry` and `resume`; a `SessionStart` hook with the matcher
-  `compact` (`hooks/after-compaction.example.txt`) prints the reminder to read the digest.
+  as a tool call with `instructions`, `carry` and `resume`. The compaction runs only when the turn
+  ends, and coordinators often kept working after the request until the automatic compaction
+  fired `[I]`; from 0.5.0 the plugin refuses the coordinator's other tool calls until the
+  compaction has run. A `SessionStart` hook with the matcher `compact`
+  (`hooks/after-compaction.example.txt`) prints the reminder to read the digest.
 
 **R-loop-7. Never type a clock time by hand.** Every time comes from `date` in the same command
 that writes it.

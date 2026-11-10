@@ -34,7 +34,7 @@ The plugin started in its own repository,
 [xuio/claude-self-compact](https://github.com/xuio/claude-self-compact). Install it from one
 place only: both copies register the same tools.
 
-Requires a Claude Code build with the plugin mods API (function hooks). Version 0.4.0 passes
+Requires a Claude Code build with the plugin mods API (function hooks). Version 0.5.0 passes
 `claude plugin test` on 2.1.301 and type-checks against the 2.1.321 API. The API is early
 access and may change between releases.
 
@@ -43,8 +43,10 @@ access and may change between releases.
 The plugin adds the tool `mcp__self-compact__request_compaction`. Claude calls it as the
 last action of a turn; the compaction runs when the turn ends. Calling it again in the same turn
 replaces the request (fields left out are dropped), and `mcp__self-compact__cancel_compaction`
-cancels it; both are too late once the compaction has started. (In the desktop app the tools
-can still be listed as deferred; Claude then loads their schema with ToolSearch first.)
+cancels it; both are too late once the compaction has started. After the request, Claude's
+other tool calls are refused until the compaction has run, so that the turn really ends (see
+"The turn has to end" below). (In the desktop app the tools can still be listed as deferred;
+Claude then loads their schema with ToolSearch first.)
 
 | Field | What it does |
 | --- | --- |
@@ -79,6 +81,35 @@ stays visible.
 
 A replacement of a request that is already scheduled is never refused by the three limits.
 
+## The turn has to end
+
+A compaction cannot run while a turn runs. In practice agents often called the tool and then
+kept working: a message arrived, or there was one more step to do. The turn went on, the
+context kept growing, and the automatic compaction fired first, without the carry and without
+the resume.
+
+So while a request waits, the plugin holds the main agent to it:
+
+1. Every other tool call of the main agent is **refused**. The answer says why and names the
+   three ways on: end the turn now; call `request_compaction` again if the next step changed
+   (it replaces `carry` and `resume`); or call `cancel_compaction`, do the work, and request
+   again.
+2. This also holds in a turn that a prompt starts before the compaction could run. The note
+   beside that prompt says so, and asks Claude to put what the prompt needs into the carry or
+   to cancel.
+3. If Claude still makes tool calls, the sixth refused call ends the turn for it
+   (`$.turn.abort`) and the compaction runs. If the host does not let the plugin end the turn,
+   the request is cancelled instead and Claude is told, so that nothing stays blocked.
+
+Sub-agents are never refused: their work goes on while the main agent compacts.
+
+Two options change this. `allowAfterRequest` names tools that stay allowed, for example a
+host's end-of-turn tool or a notes tool. `blockToolsAfterRequest: false` switches the refusal
+off: the calls run, and Claude only reads a reminder beside each result.
+
+Tell Claude to make `request_compaction` the only tool call of its message. A call issued in
+the same message but run after it is refused like any other.
+
 ## Options
 
 Set with `/config` (or `pluginConfigs` in `settings.json`):
@@ -87,6 +118,8 @@ Set with `/config` (or `pluginConfigs` in `settings.json`):
 | --- | --- | --- |
 | `alwaysInstructions` | empty | Added to the summarizer's instructions on every self-compaction. |
 | `alwaysCarry` | empty | Placed verbatim after the summary on every self-compaction, e.g. `Re-read docs/HANDOFF.md before continuing.` |
+| `blockToolsAfterRequest` | true | While a request waits, refuse the main agent's other tool calls. `false`: only remind. |
+| `allowAfterRequest` | empty | Tool names, separated by commas, that stay allowed while a request waits. A trailing `*` matches a prefix: `SendMessage, mcp__notes__*`. |
 | `burstLimit` | 3 | Most self-compactions per window in one session. 0 = no limit. |
 | `burstWindowMinutes` | 30 | The window the limit counts over. |
 | `minContextTokens` | 40000 | Smallest context worth compacting. 0 = no check. |
@@ -137,9 +170,14 @@ transcript. The plugin API has no append, so the file is rewritten per line: lin
 session are written in order, but two sessions logging at the same moment can lose a line.
 The log is a debugging aid, not a record.
 
-## Changes in 0.4.0
+## Changes since 0.3.2
 
-0.4.0 comes out of a review of 26 hours of the plugin's own log in a multi-agent session
+**0.5.0: the turn ends.** After a request the main agent's other tool calls are refused until
+the compaction has run, and a turn that still goes on is ended by the plugin (see "The turn
+has to end"). Before, the request depended on the agent ending its turn by itself, and it
+often did not.
+
+**0.4.0** comes out of a review of 26 hours of the plugin's own log in a multi-agent session
 (43 requests, 44 compactions).
 
 - **Rate limit.** The fixed "one self-compaction per 10 minutes" rule refused legitimate
@@ -160,8 +198,9 @@ The log is a debugging aid, not a record.
   vanished without a word; Claude could believe its context had been compacted.
 - **Log lines carry the session id**, and one session's lines no longer overwrite each other.
 
-The 0.4.0 changes are covered by the tests in `hooks/register.test.ts` (28 tests). At the time
-of writing they had not yet run in a long live session.
+Both versions are covered by the tests in `hooks/register.test.ts` (35 tests). At the time of
+writing they had not yet run in a long live session; ending a turn from the plugin in
+particular has only run in the test engine.
 
 ## Develop
 

@@ -34,3 +34,12 @@
   reported, log lines carry the session id.
 - PLAYBOOK.md, STARTER-KIT.md and README.md point to these files where a rule's check names a
   hook or a tool (R-ctx-3, R-wait-1, R-loop-5, R-loop-6, R-safe-6, R-safe-8, monitoring table).
+
+## 2026-11-10: self-compact 0.5.0, the turn ends
+
+- `plugins/self-compact/`: an agent often requested a compaction and then kept working, so the
+  turn did not end and the automatic compaction fired first. Now the main agent's other tool
+  calls are refused while a request waits (sub-agents are not touched), also in a turn that a
+  prompt starts before the compaction ran; after six refused calls the plugin ends the turn
+  itself. Options `blockToolsAfterRequest` and `allowAfterRequest`.
+- R-loop-6 names this behaviour.

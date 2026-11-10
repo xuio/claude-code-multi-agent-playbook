@@ -3,6 +3,8 @@ import type { On, SessionMessage } from 'claude-code'
 
 const TOOL = 'mcp__self-compact__request_compaction'
 const CANCEL = 'mcp__self-compact__cancel_compaction'
+const WORK = 'mcp__lab__run' // any other tool the agent might call
+const NOTES = 'mcp__notes__write'
 const summary: SessionMessage = { role: 'user', text: 'SUMMARY', toolUses: [] }
 
 // Beneath the plugin: a store, HOME, a log file kept in memory, the context size
@@ -31,7 +33,15 @@ function world(on: On, store: Record<string, unknown> = {}, live = false) {
     refuses: false, // the host refuses a compaction between turns (as the desktop app does)
     usage: undefined as number | undefined, // the context tokens the host reports
     compacts: 0,
+    ran: [] as string[], // the other tools that really ran
+    aborted: [] as string[], // the turns the plugin ended
     clock: mock.clock(on, { now: 1_000_000_000 }),
+  }
+  for (const tool of [WORK, NOTES]) {
+    on('tool.call', { tool } as never, () => {
+      seen.ran.push(tool)
+      return { result: 'ran' } as never
+    })
   }
   if (live) liveStore(on, store)
   else mock.store(on, store)
@@ -50,6 +60,10 @@ function world(on: On, store: Record<string, unknown> = {}, live = false) {
     if (seen.hold && e.origin?.kind === 'plugin') await seen.clock.sleep(1e9)
     seen.prompts.push({ text: e.text, context: e.context })
     return { text: e.text, context: e.context }
+  })
+  on('turn.abort', ($, e) => {
+    seen.aborted.push(e.turnId)
+    return { value: undefined }
   })
   on('command.run', ($, e) => {
     seen.commands.push(e.command)
@@ -380,4 +394,96 @@ test('log lines name the session', async ($, on) => {
   expect(lines.length).toBe(2)
   expect(lines[0]).toContain(' S1 scheduled for end of turn')
   expect(lines[1]).toContain(' S1 cancelled')
+})
+
+// The compaction needs the turn to end. Agents often kept working after the
+// request, the context filled up and the automatic compaction fired first.
+test('after a request the main agent\'s other tool calls are refused until it ran', async ($, on) => {
+  const seen = world(on)
+  await $.turn.start({ turnId: 'T1', text: 'work' })
+  await $.tool.call({ tool: WORK } as never)
+  expect(seen.ran).toEqual([WORK])
+  await $.tool.call({ tool: TOOL, carry: 'c' } as never)
+  const refused = JSON.stringify(await $.tool.call({ tool: WORK } as never))
+  expect(refused).toContain('you scheduled a compaction')
+  expect(refused).toContain('End your turn now')
+  expect(seen.ran).toEqual([WORK])
+  await $.tool.call({ tool: WORK, agentId: 'agent-1' } as never) // a sub-agent goes on working
+  expect(seen.ran).toEqual([WORK, WORK])
+  await $.turn.complete(ended('T1'))
+  await seen.clock.settle()
+  expect(seen.compacts).toBe(1)
+  await $.tool.call({ tool: WORK } as never)
+  expect(seen.ran).toEqual([WORK, WORK, WORK])
+})
+
+test('a refused agent can replace or cancel the request, and then work again', async ($, on) => {
+  const seen = world(on)
+  await $.tool.call({ tool: TOOL, carry: 'c' } as never)
+  await $.tool.call({ tool: WORK } as never)
+  await $.tool.call({ tool: WORK } as never)
+  const third = JSON.stringify(await $.tool.call({ tool: WORK } as never))
+  expect(third).toContain('refusal 3 in a row')
+  const replaced = await $.tool.call({ tool: TOOL, carry: 'new step' } as never)
+  expect(JSON.stringify(replaced)).toContain('request replaced')
+  expect(JSON.stringify(await $.tool.call({ tool: CANCEL } as never))).toContain('Compaction cancelled')
+  await $.tool.call({ tool: WORK } as never)
+  expect(seen.ran).toEqual([WORK])
+  expect(seen.logs.filter(l => l.text.includes(`refused ${WORK}`)).length).toBe(3)
+})
+
+test('a turn that starts before the compaction is refused tools too, then compacts', async ($, on) => {
+  const seen = world(on)
+  await queuedTurn($, seen)
+  expect(JSON.stringify(seen.prompts[0]?.context ?? [])).toContain('your other tool calls are refused')
+  expect(JSON.stringify(await $.tool.call({ tool: WORK } as never))).toContain('you scheduled a compaction')
+  await $.turn.complete(ended('T2'))
+  await seen.clock.settle()
+  expect(seen.compacts).toBe(1)
+  expect(seen.ran).toEqual([])
+})
+
+test('allowAfterRequest names tools that stay allowed', { options: { allowAfterRequest: 'SendMessage, mcp__notes__*' } }, async ($, on) => {
+  const seen = world(on)
+  await $.tool.call({ tool: TOOL, carry: 'c' } as never)
+  await $.tool.call({ tool: NOTES } as never)
+  expect(JSON.stringify(await $.tool.call({ tool: WORK } as never))).toContain('you scheduled a compaction')
+  expect(seen.ran).toEqual([NOTES])
+})
+
+test('blockToolsAfterRequest off: the call runs and the agent is reminded', { options: { blockToolsAfterRequest: false } }, async ($, on) => {
+  const seen = world(on)
+  const scheduled = JSON.stringify(await $.tool.call({ tool: TOOL, carry: 'c' } as never))
+  expect(scheduled).not.toContain('are refused')
+  const res = JSON.stringify(await $.tool.call({ tool: WORK } as never))
+  expect(seen.ran).toEqual([WORK])
+  expect(res).toContain('waiting for this turn to end')
+})
+
+test('an agent that will not end its turn has it ended, and the compaction runs', async ($, on) => {
+  const seen = world(on)
+  await $.turn.start({ turnId: 'T1', text: 'work' })
+  await $.tool.call({ tool: TOOL, carry: 'c', resume: 'go on' } as never)
+  let last = ''
+  for (let i = 0; i < 6; i++) last = JSON.stringify(await $.tool.call({ tool: WORK } as never))
+  await seen.clock.settle()
+  expect(last).toContain('the self-compact plugin is ending it now')
+  expect(seen.aborted).toEqual(['T1'])
+  expect(seen.ran).toEqual([])
+  await $.turn.complete({ turnId: 'T1', reason: 'aborted', isAborted: true, answer: '', durationMs: 1 } as never)
+  await seen.clock.settle()
+  expect(seen.compacts).toBe(1)
+  expect(seen.prompts.map(p => p.text.split('\n')[0])).toEqual(['go on'])
+})
+
+test('where the turn cannot be ended the request is cancelled and the agent is told', async ($, on) => {
+  const seen = world(on) // no turn.start: the plugin knows no running turn
+  await $.tool.call({ tool: TOOL, carry: 'c' } as never)
+  for (let i = 0; i < 6; i++) await $.tool.call({ tool: WORK } as never)
+  await seen.clock.settle()
+  expect(seen.aborted).toEqual([])
+  await $.tool.call({ tool: WORK } as never)
+  expect(seen.ran).toEqual([WORK])
+  await $.prompt.submit({ text: 'next' } as never)
+  expect(JSON.stringify(seen.prompts[0]?.context ?? [])).toContain('the request was cancelled')
 })
