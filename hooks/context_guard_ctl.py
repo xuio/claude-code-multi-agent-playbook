@@ -18,8 +18,9 @@ lanes (--default), and the coordinator's own compaction point (--coordinator). W
 guard's config (context_guard.overrides.json next to it by default); the base config is never
 edited. Every change is appended to context_guard.changes.jsonl beside it.
 
-Options: --config PATH (default: context_guard.json next to this script). Python 3.8+, standard
-library only.
+Options: --config PATH. Without it: $CONTEXT_GUARD_CONFIG, then the first
+.claude/hooks/context_guard.json walking up from $CLAUDE_PROJECT_DIR, then from the current
+folder, then context_guard.json next to this script. Python 3.8+, standard library only.
 """
 import argparse
 import json
@@ -129,7 +130,7 @@ def describe(entry):
 
 def cmd_show(cfg, path, now):
     n, w, lim = cg.limits_for(cfg, None)
-    print("base config (%s)" % (os.path.join(cfg["_dir"], "context_guard.json")))
+    print("base config (%s)" % cfg["_path"])
     print("  lanes: limit %dk, wrap-up from %dk" % (lim // 1000, w // 1000) if lim else "  lanes: no context notices")
     for t, e in sorted(cfg["agent_types"].items()):
         _, tw, tl = cg.limits_for(cfg, t)
@@ -243,7 +244,7 @@ def main(argv=None):
     p.add_argument("--expired", action="store_true")
     p.add_argument("--all", action="store_true")
     args = p.parse_args(argv)
-    cfg = cg.load_config(cg.config_path(args.config))
+    cfg = cg.load_config(cg.config_path(args.config, (os.getcwd(),)))
     path = cg._path(cfg, cfg["overrides_file"])
     if not path:
         raise SystemExit('the config sets "overrides_file" to "": name a file there first')

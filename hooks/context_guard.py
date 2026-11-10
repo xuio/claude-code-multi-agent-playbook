@@ -3,21 +3,32 @@
 
 Register the same command for two hook events (see settings.example.json).
 
-PreToolUse (Bash): denies a foreground Bash call whose `timeout` is above the wait cap (default
-270 s). Such a call outlives the 5-minute prompt cache, so the agent's next call would write its
-whole context again. Sub-agents only, unless the config says otherwise.
+PreToolUse (all tools, matcher "*"):
+  - denies a foreground Bash call whose `timeout` is above the wait cap (default 270 s). Such a
+    call outlives the 5-minute prompt cache, so the agent's next call would write its whole
+    context again. Sub-agents only, unless the config says otherwise.
+  - hard stop: denies every tool call of a sub-agent whose context is at or past its limit plus
+    `hard_stop_margin` and that has used its `hard_stop_grace_calls`. Decided from the state file;
+    a raised limit or a fallen context lifts it at the next call.
 
 PostToolUse (all tools): puts a one-line "[context-guard] ..." notice next to the tool result when
   - a sub-agent comes within the wrap-up margin of its context limit, and again at the limit;
+    past the limit, again for every `stop_repeat_every` tokens; at the hard stop, with the
+    grace calls left;
   - the coordinator (the main session) reaches its compaction point;
+  - one of the coordinator's lanes passed its limit or reached its hard stop (with the command
+    that raises its limit);
   - a tool call took longer than the prompt cache lives;
   - a sub-agent started a background job (the notice says how to wait for it).
 
 Agents cannot see their own context size; this hook tells them. A context notice fires once per
-(session, agent) and re-arms after the context fell again (compaction).
+(session, agent) and re-arms after the context fell again (compaction). A second run for the same
+tool call (the hook registered twice) does nothing.
 
-Limits come from two files next to this script, both read on every call, so a change takes
-effect at the next tool call of every running agent:
+Config: --config, then $CONTEXT_GUARD_CONFIG, then the first .claude/hooks/context_guard.json
+walking up from $CLAUDE_PROJECT_DIR, then context_guard.json next to this script. With
+--require-config the hook does nothing when none of these exists. Limits come from two files,
+both read on every call, so a change takes effect at the next tool call of every running agent:
   - context_guard.json: the project's base config (default lane limit, limits per agent type);
   - context_guard.overrides.json: the coordinator's dynamic layer (a limit for all lanes, for one
     agent type or for one agent, each with an optional expiry, and its own compaction point).
@@ -30,6 +41,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import sys
 import time
 from types import SimpleNamespace
@@ -50,6 +62,10 @@ DEFAULTS = {
     "notes_hint": "your notes file",    # how the notices name the place of the HANDOFF block
     "state_dir": "~/.cache/context-guard",
     "log": "",                          # JSON lines: one per notice and per denial ("" = off)
+    "stop_repeat_every": 10_000,        # sub-agent past its limit: repeat the stop notice per this growth (0 = once)
+    "hard_stop_margin": 20_000,         # sub-agent: refuse tool calls from limit + this (0 = no hard stop)
+    "hard_stop_grace_calls": 10,        # ... after this many further tool calls (notes, commit, push)
+    "coordinator_lane_alerts": True,    # main session: one line per lane past its limit / at its hard stop
 }
 
 CONFIG_MAX_BYTES = 64 * 1024
@@ -78,8 +94,24 @@ BG = ("a background job is running. Poll it in the foreground with checks of at 
 DENY = ("Bash timeout above {s} s outlives the 5-minute prompt cache: your next call would write your whole "
         "context again. Re-run with timeout <= {ms}, or set run_in_background and poll with checks of at "
         "most 240 s.")
+REPEAT = ("context {k}k is {p}k past your {f}k limit: stop now. Update the HANDOFF block at the top of {notes}, "
+          "commit what is tested and end with \"HANDOFF ready\".{h}")
+REPEAT_HARD = " From {h}k your tool calls will be refused."
+HARD_START = ("context {k}k: hard stop ({f}k limit + {m}k). You have {n} more tool calls for notes, commit, "
+              "push and stopping your jobs; after that every tool call is refused. End with your handoff report.")
+HARD_LEFT = "hard stop: {n} tool calls left, then every tool call is refused. End with your handoff report."
+HARD_DENY = ("context {k}k against your {f}k limit: your tool calls are refused. End your turn now with your "
+             "handoff report as your final message. The coordinator can lift this by raising your limit.")
+LANE_OVER = ("lane {name} is past its limit: context {k}k, limit {f}k. To raise it: {cmd}")
+LANE_HARD = ("lane {name} has reached its hard stop (context {k}k, limit {f}k): its tool calls are refused "
+             "after its grace calls. To lift it: {cmd}")
+LANE_FRESH_S = 900                      # coordinator alerts only for lanes updated this recently
+LANE_SCAN_EVERY_S = 30                  # ... and scan for them at most this often
+LANE_ALERTS_KEPT = 200
+TUIDS_KEPT = 32                         # tool calls remembered, so that a second run for one of them does nothing
 
 FLAGS = ("--config", "--state-dir", "--log", "--trace", "--tag", "--only-if-prompt-contains")
+BOOL_FLAGS = ("--require-config",)
 
 
 def _true(v) -> bool:
@@ -111,8 +143,13 @@ def is_bash(name) -> bool:
 def parse_args(argv) -> SimpleNamespace:
     """--flag value pairs only. No argparse: this runs on every tool call."""
     a = {f[2:].replace("-", "_"): "" for f in FLAGS}
+    a.update({f[2:].replace("-", "_"): False for f in BOOL_FLAGS})
     i = 0
     while i < len(argv):
+        if argv[i] in BOOL_FLAGS:
+            a[argv[i][2:].replace("-", "_")] = True
+            i += 1
+            continue
         if argv[i] not in FLAGS or i + 1 >= len(argv):
             raise ValueError("bad argument: " + argv[i])
         a[argv[i][2:].replace("-", "_")] = argv[i + 1]
@@ -120,15 +157,41 @@ def parse_args(argv) -> SimpleNamespace:
     return SimpleNamespace(**a)
 
 
-def config_path(arg: str) -> str:
-    return (arg or os.environ.get("CONTEXT_GUARD_CONFIG")
-            or os.path.join(os.path.dirname(os.path.abspath(__file__)), "context_guard.json"))
+def find_up(start, rel: str):
+    """The first `rel` below `start` or one of its parent folders, up to the filesystem root, else None."""
+    if not start:
+        return None
+    d = os.path.abspath(os.path.expanduser(start))
+    while True:
+        p = os.path.join(d, rel)
+        if os.path.isfile(p):
+            return p
+        parent = os.path.dirname(d)
+        if parent == d:
+            return None
+        d = parent
+
+
+PROJECT_CONFIG = os.path.join(".claude", "hooks", "context_guard.json")
+
+
+def config_path(arg: str, extra_starts=()) -> str:
+    """--config, then $CONTEXT_GUARD_CONFIG, then the first .claude/hooks/context_guard.json walking up
+    from $CLAUDE_PROJECT_DIR (and from each of `extra_starts`), then the file beside this script."""
+    if arg or os.environ.get("CONTEXT_GUARD_CONFIG"):
+        return arg or os.environ["CONTEXT_GUARD_CONFIG"]
+    for start in (os.environ.get("CLAUDE_PROJECT_DIR"),) + tuple(extra_starts):
+        p = find_up(start, PROJECT_CONFIG)
+        if p:
+            return p
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "context_guard.json")
 
 
 def load_config(path: str) -> dict:
     """Defaults, overlaid with the well-typed keys of the config file. Any problem: defaults."""
     cfg = dict(DEFAULTS)
     cfg["_dir"] = os.path.dirname(os.path.abspath(path)) if path else ""
+    cfg["_path"] = os.path.abspath(path) if path else ""
     try:
         with open(path, "rb") as f:
             raw = f.read(CONFIG_MAX_BYTES + 1)
@@ -262,6 +325,141 @@ def compact_point(cfg: dict, ovs: dict) -> int:
     return cfg["coordinator_compact_at"] if v is None else v
 
 
+def hard_point(cfg: dict, limit) -> int:
+    """Context from which a sub-agent's tool calls are refused (after its grace calls); 0 = no hard stop."""
+    m = cfg["hard_stop_margin"]
+    return limit + m if limit and m > 0 else 0
+
+
+def state_key(inp: dict, tag: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in "-_" else "_"
+                   for ch in f"{inp.get('session_id', 'nosession')}_{inp.get('agent_id') or 'main'}{tag}")
+
+
+def read_state(sp: str) -> dict:
+    try:
+        with open(sp) as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def hard_stop_pre(inp: dict, a: SimpleNamespace, cfg: dict, now=None):
+    """PreToolUse, all tools: (stdout, log record) denying a sub-agent's call once it is past its hard
+    stop and has used its grace calls; ('', None) otherwise. Decided from the state file that
+    PostToolUse keeps, with the limit resolved afresh from config and overrides, so a raised limit
+    lifts the block at once. Only on the way to a denial is the transcript tail read once more, so
+    that a context that fell (compaction) lifts it too. Reaches the same decision when run twice."""
+    now = time.time() if now is None else now
+    aid = inp.get("agent_id")
+    if not aid or inp.get("agent_type") in cfg["skip_agent_types"] or cfg["hard_stop_margin"] <= 0:
+        return "", None
+    _, _, limit, _, _ = resolve(cfg, load_overrides(cfg, now), aid, inp.get("agent_type"))
+    hard = hard_point(cfg, limit)
+    if not hard:
+        return "", None
+    state_dir = a.state_dir or _path(cfg, cfg["state_dir"])
+    st = read_state(os.path.join(state_dir, state_key(inp, a.tag) + ".json"))
+    h, ctx = st.get("hard"), st.get("last_ctx")
+    if not isinstance(h, dict) or not isinstance(ctx, int) or ctx < hard:
+        return "", None
+    if h.get("limit") != limit:
+        return "", None                       # the limit changed: the next PostToolUse starts a new grace count
+    used = h.get("used")
+    if not isinstance(used, int) or used < cfg["hard_stop_grace_calls"]:
+        return "", None
+    path = agent_transcript(inp)
+    if not path or not os.path.isfile(path):
+        return "", None                       # the lane's transcript cannot be read: never refuse blind
+    fresh, _ = scan(read_tail(path, TAIL_BYTES), None)
+    if fresh is not None:
+        if fresh < hard:
+            return "", None                   # compacted since the last tool call: lifted
+        ctx = fresh
+    out = json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse", "permissionDecision": "deny",
+        "permissionDecisionReason": "[context-guard] " + HARD_DENY.format(k=ctx // 1000, f=limit // 1000)}})
+    return out, {"ts": now, "event": "PreToolUse", "deny": "hard_stop", "agent_id": aid,
+                 "agent_type": inp.get("agent_type"), "tool": inp.get("tool_name"), "ctx": ctx, "limit": limit}
+
+
+def lane_alerts(inp: dict, state: dict, state_dir: str, main_key: str, cfg: dict, now: float) -> list:
+    """Main session: one line per lane of this session that has passed its limit, and one more when it
+    has reached its hard stop. Each once per lane and level; only lanes updated in the last 15 minutes.
+    Scans the state dir at most once per 30 s, opening only this session's recently written files."""
+    if not cfg["coordinator_lane_alerts"] or now - (state.get("lane_scan_ts") or 0) < LANE_SCAN_EVERY_S:
+        return []
+    state["lane_scan_ts"] = now
+    prefix = state_key({"session_id": inp.get("session_id"), "agent_id": "x"}, "")[:-1]
+    alerted = state.get("lane_alerts")
+    alerted = alerted if isinstance(alerted, dict) else {}
+    out = []
+    try:
+        entries = list(os.scandir(state_dir))
+    except OSError:
+        return []
+    for e in entries:
+        n = e.name
+        if not n.startswith(prefix) or not n.endswith(".json") or n == main_key + ".json":
+            continue
+        try:
+            if now - e.stat().st_mtime > LANE_FRESH_S:
+                continue                      # cheap pre-filter on the file time
+        except OSError:
+            continue
+        st = read_state(e.path)
+        aid, ctx, limit, upd = st.get("agent_id"), st.get("last_ctx"), st.get("limit"), st.get("updated")
+        if (not isinstance(aid, str) or not isinstance(ctx, int) or not isinstance(limit, int) or not limit
+                or not isinstance(upd, (int, float)) or now - upd > LANE_FRESH_S):
+            continue
+        levels = list(alerted.get(aid) or [])
+        want = []
+        over, hard = "over:%d" % limit, "hard:%d" % limit   # per limit: a raised limit is announced again
+        if ctx >= limit and over not in levels:
+            want.append(over)
+        if isinstance(st.get("hard"), dict) and hard not in levels:
+            want.append(hard)
+        if not want:
+            continue
+        name = lane_name(inp.get("transcript_path") or "", aid, st.get("agent_type"))
+        new_limit = -(-(max(ctx, limit) + 30_000) // 10_000) * 10_000
+        cmd = ('%s --config %s set --agent %s --limit %d --for 60m --reason "..."'
+               % (ctl_command(), shlex.quote(cfg.get("_path") or os.path.join(cfg.get("_dir") or "",
+                                                                             "context_guard.json")),
+                  shlex.quote(aid), new_limit))
+        tpl = LANE_HARD if hard in want else LANE_OVER
+        out.append(tpl.format(name=name, k=ctx // 1000, f=limit // 1000, cmd=cmd))
+        alerted[aid] = (levels + want)[-8:]
+    if out:
+        state["lane_alerts"] = dict(list(alerted.items())[-LANE_ALERTS_KEPT:])
+    return out
+
+
+def ctl_command() -> str:
+    """How the coordinator calls the control command. From the plugin it is `context-guard-ctl`
+    (on the Bash tool's PATH): the plugin's own folder changes with every update."""
+    here = os.path.dirname(os.path.realpath(__file__))
+    root = os.environ.get("CLAUDE_PLUGIN_ROOT")
+    if root and (here + os.sep).startswith(os.path.realpath(root) + os.sep):
+        return "context-guard-ctl"
+    return "python3 " + shlex.quote(os.path.join(here, "context_guard_ctl.py"))
+
+
+def lane_name(main_tp: str, aid: str, agent_type) -> str:
+    """'"<description>" (<id8>)' from the sub-agent's meta file if readable, else its agent type."""
+    desc = None
+    if main_tp.endswith(".jsonl"):
+        try:
+            with open(os.path.join(main_tp[:-len(".jsonl")], "subagents", f"agent-{aid}.meta.json"), "rb") as f:
+                m = json.loads(f.read(CONFIG_MAX_BYTES))
+            if isinstance(m, dict) and isinstance(m.get("description"), str) and m["description"].strip():
+                desc = m["description"].strip()[:80]
+        except Exception:
+            pass
+    return '"%s" (%s)' % (desc or agent_type or "sub-agent", aid[:8])
+
+
 def pre_tool_use(inp: dict, cfg: dict) -> str:
     """'' (no opinion, normal permission flow) or a deny for an over-long foreground Bash wait."""
     if not is_bash(inp.get("tool_name")):
@@ -370,6 +568,7 @@ def decide(state: dict, ctx, is_sub: bool, th, wait_s, now: float, cfg: dict, bg
         old, new = state.get("limit"), th[2]
         if old is not None and old != new:
             fired = set()                     # new limit: its notices fire afresh
+            state.pop("stop_ctx", None)
             if new:
                 out.append(CHANGED.format(o=old // 1000, f=new // 1000, w=th[1] // 1000))
         if old != new:
@@ -392,12 +591,40 @@ def decide(state: dict, ctx, is_sub: bool, th, wait_s, now: float, cfg: dict, bg
                 out.append(MAIN.format(k=k))
             elif top == limit:
                 out.append(LIMIT.format(k=k, f=limit // 1000, notes=notes))
+                state["stop_ctx"] = ctx
             elif top == wrapup:
                 out.append(WRAPUP.format(k=k, f=limit // 1000, m=(limit - ctx) // 1000, notes=notes))
             else:
                 out.append(NOTE.format(k=k, f=limit // 1000, notes=notes))
             fired.update(t for t in ths if ctx >= t)   # a jump past several fires only the top one
         state["fired"] = sorted(fired)
+        if is_sub and limit:
+            if limit not in fired:
+                state.pop("stop_ctx", None)   # below the limit again (or a new limit): no repeats
+            hard = hard_point(cfg, limit)
+            if hard and ctx >= hard:
+                h = state.get("hard")
+                grace = cfg["hard_stop_grace_calls"]
+                if not isinstance(h, dict) or h.get("limit") != limit:
+                    state["hard"] = {"limit": limit, "used": 0}
+                    out.append(HARD_START.format(k=ctx // 1000, f=limit // 1000,
+                                                 m=cfg["hard_stop_margin"] // 1000, n=grace))
+                else:
+                    h["used"] = min(int(h.get("used") or 0) + 1, grace + 1)
+                    out.append(HARD_LEFT.format(n=max(grace - h["used"], 0)))
+                state["stop_ctx"] = ctx
+            else:
+                state.pop("hard", None)       # the context fell or the limit was raised: lifted
+                every = cfg["stop_repeat_every"]
+                sc = state.get("stop_ctx")
+                if every > 0 and isinstance(sc, int) and ctx >= sc + every and ctx >= limit:
+                    out.append(REPEAT.format(
+                        k=ctx // 1000, p=(ctx - limit) // 1000, f=limit // 1000, notes=notes,
+                        h=REPEAT_HARD.format(h=hard // 1000) if hard else ""))
+                    state["stop_ctx"] = ctx
+        elif is_sub:
+            state.pop("hard", None)
+            state.pop("stop_ctx", None)
         if len(out) > changed:
             state["ctx"] = ctx
             if is_sub:
@@ -467,8 +694,7 @@ def run(inp: dict, a: SimpleNamespace, cfg: dict, now=None) -> str:
 
     state_dir = a.state_dir or _path(cfg, cfg["state_dir"])
     os.makedirs(state_dir, exist_ok=True)
-    key = "".join(ch if ch.isalnum() or ch in "-_" else "_"
-                  for ch in f"{inp.get('session_id', 'nosession')}_{inp.get('agent_id') or 'main'}{a.tag}")
+    key = state_key(inp, a.tag)
     sp = os.path.join(state_dir, key + ".json")
     with open(sp + ".lock", "a") as lk:
         try:
@@ -476,20 +702,28 @@ def run(inp: dict, a: SimpleNamespace, cfg: dict, now=None) -> str:
             fcntl.flock(lk, fcntl.LOCK_EX)    # parallel tool calls of one agent: fire once
         except ImportError:
             pass                              # no fcntl on this platform: run without the lock
-        try:
-            with open(sp) as f:
-                state = json.load(f)
-        except (OSError, ValueError):
-            state = {}
-        before = json.dumps(state, sort_keys=True)
+        state = read_state(sp)
+        seen = state.get("tuids")
+        seen = seen if isinstance(seen, list) else []
+        if tuid and (tuid in seen or state.get("last_tuid") == tuid):
+            return ""                         # a second registration ran for this call: already done
         notes = decide(state, ctx, is_sub, th, wait_s, now, cfg, bg_job)
-        if json.dumps(state, sort_keys=True) != before:
-            state["agent_type"] = inp.get("agent_type") or ("" if is_sub else "main")
-            state["updated"] = now
-            tmp = f"{sp}.{os.getpid()}.tmp"
-            with open(tmp, "w") as f:
-                json.dump(state, f)
-            os.replace(tmp, sp)
+        if not is_sub:
+            notes += lane_alerts(inp, state, state_dir, key, cfg, now)
+        # recorded on every call: what the PreToolUse hard stop and the coordinator's lane alerts read
+        state["agent_type"] = inp.get("agent_type") or ("" if is_sub else "main")
+        state["updated"] = now
+        if is_sub:
+            state["agent_id"] = str(inp.get("agent_id"))
+        if ctx is not None:
+            state["last_ctx"] = ctx
+        if tuid:
+            state["tuids"] = (seen + [tuid])[-TUIDS_KEPT:]   # several: parallel calls interleave
+            state.pop("last_tuid", None)
+        tmp = f"{sp}.{os.getpid()}.tmp"
+        with open(tmp, "w") as f:
+            json.dump(state, f)
+        os.replace(tmp, sp)
     if a.trace:
         append_line(a.trace, {"ts": round(now, 3), "key": key, "agent_type": inp.get("agent_type"),
                               "tool": inp.get("tool_name"), "ctx": ctx, "wait_s": wait_s,
@@ -521,16 +755,23 @@ def main(argv=None) -> int:
         if not isinstance(inp, dict):
             return 0
         a = parse_args(sys.argv[1:] if argv is None else argv)
-        cfg = load_config(config_path(a.config))
+        cp = config_path(a.config)
+        if a.require_config and not os.path.isfile(cp):
+            return 0                          # installed for all projects; this one has not opted in
+        cfg = load_config(cp)
         if inp.get("hook_event_name") == "PreToolUse":
             out = pre_tool_use(inp, cfg)      # decided from stdin and the config: no transcript, no state
+            rec = None
+            if out:
+                rec = {"ts": time.time(), "event": "PreToolUse", "deny": True,
+                       "agent_id": inp.get("agent_id"), "agent_type": inp.get("agent_type"),
+                       "timeout": inp["tool_input"].get("timeout")}
+            else:
+                out, rec = hard_stop_pre(inp, a, cfg)
             if out:
                 sys.stdout.write(out + "\n")
                 sys.stdout.flush()
-                append_line(a.log or _path(cfg, cfg["log"]),
-                            {"ts": time.time(), "event": "PreToolUse", "deny": True,
-                             "agent_id": inp.get("agent_id"), "agent_type": inp.get("agent_type"),
-                             "timeout": inp["tool_input"].get("timeout")})
+                append_line(a.log or _path(cfg, cfg["log"]), rec)
             return 0
         out = run(inp, a, cfg)
         if out:

@@ -41,7 +41,7 @@ written note, and never wake a big agent for work a fresh one can do.
 | [examples/agents/](examples/agents) | Agent definition files: engineer, worker, reader, an `Explore` override and a lean batch worker for fan-outs. |
 | [examples/skills/token-saver/](examples/skills/token-saver) | A minimal skill with the reading habits that keep contexts small. The example agent files preload it. |
 | [examples/scripts/](examples/scripts) | `bgrun.sh` and `bgwait.sh`: run a long command in the background and poll it without losing the prompt cache. |
-| [hooks/](hooks/README.md) | Claude Code hooks that enforce the rules agents forget: a context guard (tells each agent how full its context is, denies waits that outlive the prompt cache), a command that changes context limits while agents run, a Bash guard (no `cd`, no heavy local builds) and a reminder after every compaction. |
+| [hooks/](hooks/README.md) | Claude Code hooks that enforce the rules agents forget: a context guard (tells each agent how full its context is, stops a lane that runs far past its limit, tells the coordinator which lanes are over, denies waits that outlive the prompt cache), a command that changes context limits while agents run, a Bash guard (no `cd`, no heavy local builds), a reminder after every compaction and a compaction log. Copy them into a project, or install them once as the plugin `playbook-hooks`. |
 | [plugins/self-compact/](plugins/self-compact/README.md) | A plugin that lets the coordinator compact its own context at a point it chooses, carry text verbatim across the compaction and resume. |
 | [tools/agent_scan.py](tools/agent_scan.py) | One line per agent of a running session: context against its limit, idle time, polling, hung tool calls, cache rewrites. |
 | [tools/make_rules_digest.py](tools/make_rules_digest.py) | Regenerates RULES.md from PLAYBOOK.md. |
@@ -67,7 +67,12 @@ written note, and never wake a big agent for work a fresh one can do.
 
 4. Install the hooks ([hooks/README.md](hooks/README.md)). Rules that live only in a prompt are
    forgotten after a compaction; the hooks keep the two most expensive ones in force (context
-   limits and the 270 s wait cap).
+   limits and the 270 s wait cap). The shortest way is the plugin, which acts only in projects
+   that have a config file in `.claude/hooks/`:
+
+   ```
+   /plugin install playbook-hooks --marketplace xuio/claude-code-multi-agent-playbook
+   ```
 
 5. For a project that will run for days, work through [STARTER-KIT.md](STARTER-KIT.md) once:
    it sets up the notes, hints and findings files, the hooks and the brief templates.

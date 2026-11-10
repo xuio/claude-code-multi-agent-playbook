@@ -217,7 +217,12 @@ coordinator.** Size work in phases that end in a deliverable.
 - An agent that starts at ~63k (general-purpose) has ~50k less room under the same limit: give it
   a lean agent file (R-ctx-11) or count that in.
 - Check: a context-guard hook (`hooks/context_guard.py`) posts notices at the wrap-up point and
-  at the limit; overrides per agent, per agent type and for all lanes live in one JSON file,
+  at the limit. One stop notice is not enough: of 580 lanes that got a notice, 86 reached the
+  stop notice and 22 ended more than 20k past their limit `[M]`. So the hook repeats the stop
+  notice every 10k, and 20k past the limit it gives the lane ten last tool calls and then refuses
+  the rest until the coordinator raises the limit (new, not yet run in the field); the
+  coordinator gets one line per lane that is over. Overrides per agent, per agent type and for
+  all lanes live in one JSON file,
   written by `hooks/context_guard_ctl.py`; every change of a limit is recorded with reason, scope
   and end condition (the command appends it to a changes file); the sweep looks at lanes above 70 % of their limit ~5 min after a wave launch.
 
@@ -629,8 +634,13 @@ to a successor coordinator; it continues through compactions `[U]`.
   as a tool call with `instructions`, `carry` and `resume`. The compaction runs only when the turn
   ends, and coordinators often kept working after the request until the automatic compaction
   fired `[I]`; from 0.5.0 the plugin refuses the coordinator's other tool calls until the
-  compaction has run. A `SessionStart` hook with the matcher `compact`
-  (`hooks/after-compaction.example.txt`) prints the reminder to read the digest.
+  compaction has run. From 0.6.0 it can also remind a coordinator that does not ask
+  (`remindAtTokens`), compact by itself at the end of a turn as a safety net
+  (`autoCompactAtTokens`, nothing but the fixed texts is carried), and read the fixed
+  instructions from the project file (`instructionsFile`). A `SessionStart` hook with the
+  matcher `compact` (`hooks/after-compaction.example.txt`) prints the reminder to read the
+  digest, and `hooks/compaction_log.py` logs every compaction with its trigger, which shows how
+  often the automatic one still fires.
 
 **R-loop-7. Never type a clock time by hand.** Every time comes from `date` in the same command
 that writes it.
@@ -733,7 +743,7 @@ STATE/NEXT section with live job ids; the coordinator keeps the resume sheet; mu
 |---|---|---|---|
 | alert daemon | hosts, slots held vs used, queues, timeouts, disk, memory, agent transcripts (wakes, context, stuck), usage windows | loop every 2 min | alerts JSONL + digest |
 | wait-alert watcher | blocks until a new alert not in the ignore list | coordinator background task | exits -> harness wakes the coordinator |
-| context guard hook (`hooks/context_guard.py`) | context notices at soft/firm; denies foreground waits > 270 s; reminds about bg jobs | every tool call (Pre/PostToolUse) | notice in the agent's context; JSONL log |
+| context guard hook (`hooks/context_guard.py`) | context notices at soft/firm, repeated past the limit; refuses the tool calls of a lane 20k past its limit; tells the coordinator which lanes are over; denies foreground waits > 270 s; reminds about bg jobs | every tool call (Pre/PostToolUse) | notice in the agent's context; JSONL log |
 | Bash guard hook (`hooks/bash_guard.py`) | rejects `cd`/`pushd` and the commands listed in its config | every Bash call (PreToolUse) | reason in the agent's context |
 | duty checker | OK/OVERDUE per duty from evidence files | sweep timer | stdout in the sweep notification |
 | agent scan (`tools/agent_scan.py`) | SILENT/NOMSG/POLLING/CTX/OVER/HUNG/REWRITES per agent | sweep | stdout |

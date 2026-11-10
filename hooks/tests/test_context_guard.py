@@ -65,8 +65,11 @@ class Base(unittest.TestCase):
         return cg.parse_args(["--state-dir", self.state, *extra])
 
     def inp(self, sub=False, **kw):
+        # every call gets its own tool_use_id: a second run for the same id is a no-op (idempotence)
+        Base.calls = getattr(Base, "calls", 0) + 1
         d = {"session_id": "sess", "transcript_path": self.main_tp, "hook_event_name": "PostToolUse",
-             "tool_name": "Bash", "tool_use_id": "toolu_sub" if sub else "toolu_main", "duration_ms": 1000}
+             "tool_name": "Bash", "tool_use_id": "toolu_%s_%d" % ("sub" if sub else "main", Base.calls),
+             "duration_ms": 1000}
         if sub:
             d.update(agent_id=AID, agent_type="engineer")
         d.update(kw)
@@ -202,10 +205,11 @@ class TestContextNotices(Base):
 
     def test_slow_call_from_transcript_when_no_duration(self):
         c = self.cfg(coordinator_compact_at=0)
-        d = self.inp()
+        d = self.inp(tool_use_id="toolu_main")
         del d["duration_ms"]
         t0 = cg.iso_to_epoch("2026-10-09T20:01:00.000Z")
         self.assertEqual(cg.run(d, self.args(), c, t0 + 100), "")
+        shutil.rmtree(self.state)                 # the same tool_use_id again: start from fresh state
         self.assertIn("call took 360 s", self.note(cg.run(d, self.args(), c, t0 + 360)))
 
     def test_prompt_filter(self):
@@ -556,6 +560,292 @@ class TestNeverFails(Base):
         self.assertEqual(r.returncode, 0)
         self.assertIn("compact at the next natural point", r.stdout)
         self.assertLess(dt, 1.0)
+
+
+class TestStopRepeatAndHardStop(Base):
+    """A lane that does not stop: the repeated stop notice, the grace calls, the denial and its lift."""
+
+    def post(self, c, ctx=None, now=NOW, **kw):
+        if ctx is not None:
+            self.set_ctx(self.sub_tp, ctx)
+        return self.sub_run(c, now, **kw)
+
+    def pre(self, c, sub=True, tool_use_id="toolu_pre", **kw):
+        d = {"hook_event_name": "PreToolUse", "session_id": "sess", "transcript_path": self.main_tp,
+             "tool_name": "Read", "tool_input": {}, "tool_use_id": tool_use_id}
+        if sub:
+            d.update(agent_id=AID, agent_type="engineer")
+        d.update(kw)
+        out, _ = cg.hard_stop_pre(d, self.args(), c, NOW)
+        return json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"] if out else ""
+
+    def state_of(self):
+        with open(os.path.join(self.state, f"sess_{AID}.json")) as f:
+            return json.load(f)
+
+    def test_repeat_cadence(self):
+        c = self.cfg(hard_stop_margin=0)
+        self.assertIn("150k is past your 150k limit", self.post(c, 150_000))
+        self.assertEqual(self.post(c, 155_000), "")
+        out = self.post(c, 160_000)
+        self.assertIn("context 160k is 10k past your 150k limit: stop now", out)
+        self.assertNotIn("refused", out)
+        self.assertEqual(self.post(c, 169_000), "")
+        self.assertIn("is 20k past", self.post(c, 170_000))
+        self.assertEqual(self.post(c, 175_000), "")
+
+    def test_repeat_names_the_hard_stop_and_can_be_off(self):
+        c = self.cfg(hard_stop_margin=50_000)
+        self.post(c, 150_000)
+        self.assertIn("From 200k your tool calls will be refused", self.post(c, 160_000))
+        c = self.cfg(stop_repeat_every=0, hard_stop_margin=0)
+        shutil.rmtree(self.state)
+        self.post(c, 150_000)
+        self.assertEqual(self.post(c, 190_000), "")                    # 0: the stop notice comes once
+
+    def test_grace_calls_then_denial(self):
+        c = self.cfg(hard_stop_grace_calls=2)
+        self.assertEqual(self.pre(c), "")                              # no state yet
+        out = self.post(c, 171_000)
+        self.assertIn("hard stop (150k limit + 20k). You have 2 more tool calls", out)
+        self.assertEqual(self.pre(c), "")
+        self.assertIn("hard stop: 1 tool calls left", self.post(c))
+        self.assertEqual(self.pre(c), "")
+        self.assertIn("hard stop: 0 tool calls left", self.post(c))
+        reason = self.pre(c)
+        self.assertIn("context 171k against your 150k limit: your tool calls are refused", reason)
+        self.assertIn("raising your limit", reason)
+        self.assertEqual(self.pre(c), reason)                          # a second run: same decision
+        self.assertEqual(self.state_of()["hard"]["used"], 2)            # PreToolUse counts nothing
+
+    def test_denial_lifts_after_a_raised_limit(self):
+        c = self.cfg(hard_stop_grace_calls=0)
+        self.post(c, 175_000)
+        self.assertTrue(self.pre(c))
+        ov = os.path.join(os.path.dirname(self.cfg_path), "context_guard.overrides.json")
+        with open(ov, "w") as f:
+            json.dump({"agents": {AID: {"limit": 220_000}}}, f)
+        self.assertEqual(self.pre(c), "")                              # read afresh on every call
+        out = self.post(c)
+        self.assertIn("changed your context limit from 150k to 220k", out)
+        self.assertNotIn("hard", self.state_of())
+
+    def test_a_raised_limit_that_is_still_too_low_starts_new_grace_calls(self):
+        c = self.cfg(hard_stop_grace_calls=1)
+        self.post(c, 175_000)
+        self.post(c)
+        self.assertTrue(self.pre(c))                                   # refused under the 150k limit
+        ov = os.path.join(os.path.dirname(self.cfg_path), "context_guard.overrides.json")
+        with open(ov, "w") as f:
+            json.dump({"agents": {AID: {"limit": 152_000}}}, f)        # hard stop now 172k, context 175k
+        self.assertEqual(self.pre(c), "")                              # not locked out under the new limit
+        out = self.post(c)
+        self.assertIn("changed your context limit from 150k to 152k", out)
+        self.assertIn("hard stop (152k limit + 20k). You have 1 more tool calls", out)
+        self.assertEqual(self.state_of()["hard"], {"limit": 152_000, "used": 0})
+        self.assertEqual(self.pre(c), "")
+        self.post(c)
+        self.assertIn("against your 152k limit", self.pre(c))
+
+    def test_denial_lifts_after_the_context_fell(self):
+        c = self.cfg(hard_stop_grace_calls=0)
+        self.post(c, 175_000)
+        self.assertTrue(self.pre(c))
+        self.set_ctx(self.sub_tp, 60_000)                              # a compaction
+        self.assertEqual(self.pre(c), "")
+        self.assertEqual(self.post(c), "")
+        self.assertNotIn("hard", self.state_of())
+
+    def test_main_session_skipped_types_and_zero_limit_never_denied(self):
+        c = self.cfg(hard_stop_grace_calls=0, coordinator_compact_at=0)
+        cg.run(self.inp(), self.args(), c, NOW)                        # main at 240k
+        self.assertEqual(self.pre(c, sub=False), "")
+        self.post(c, 175_000)
+        self.assertTrue(self.pre(c))
+        self.assertEqual(self.pre(self.cfg(hard_stop_grace_calls=0, skip_agent_types=["engineer"])), "")
+        self.assertEqual(self.pre(self.cfg(hard_stop_grace_calls=0, lane_limit=0)), "")
+        self.assertEqual(self.pre(self.cfg(hard_stop_grace_calls=0, hard_stop_margin=0)), "")
+
+    def test_second_run_for_the_same_call_is_idempotent(self):
+        c = self.cfg(hard_stop_grace_calls=3)
+        self.post(c, 175_000)
+        d = self.inp(sub=True)
+        first = cg.run(d, self.args(), c, NOW)
+        self.assertIn("2 tool calls left", first)
+        self.assertEqual(cg.run(d, self.args(), c, NOW), "")           # registered twice: no repeat
+        self.assertEqual(self.state_of()["hard"]["used"], 1)            # and no second grace call
+
+    def test_two_registrations_and_parallel_calls_count_each_call_once(self):
+        c = self.cfg(hard_stop_grace_calls=10)
+        self.post(c, 175_000)
+        a, b = self.inp(sub=True), self.inp(sub=True)                  # two tool calls of one message
+        for d in (a, b):                                               # the first registration, both calls
+            self.assertIn("tool calls left", cg.run(d, self.args(), c, NOW))
+        for d in (a, b):                                               # the second registration, interleaved
+            self.assertEqual(cg.run(d, self.args(), c, NOW), "")
+        self.assertEqual(self.state_of()["hard"]["used"], 2)
+
+    def test_an_unreadable_transcript_never_refuses(self):
+        c = self.cfg(hard_stop_grace_calls=0)
+        self.post(c, 175_000)
+        self.assertTrue(self.pre(c))
+        os.rename(self.sub_tp, self.sub_tp + ".gone")
+        self.assertEqual(self.pre(c), "")
+        os.rename(self.sub_tp + ".gone", self.sub_tp)
+        self.assertEqual(self.pre(c, transcript_path=None), "")
+        self.assertTrue(self.pre(c))
+
+    def test_corrupt_state_fails_open(self):
+        c = self.cfg(hard_stop_grace_calls=0)
+        os.makedirs(self.state)
+        for body in ("{not json", "[1, 2]", '{"hard": "x", "last_ctx": "y"}'):
+            with open(os.path.join(self.state, f"sess_{AID}.json"), "w") as f:
+                f.write(body)
+            self.assertEqual(self.pre(c), "", body)
+        with open(os.path.join(self.state, f"sess_{AID}.json"), "w") as f:
+            f.write("{not json")
+        self.assertIn("past your 150k limit", self.post(c, 160_000))
+
+    def test_cli_denies_any_tool(self):
+        self.cfg(hard_stop_grace_calls=0)
+        c = cg.load_config(self.cfg_path)
+        self.post(c, 175_000)
+        d = {"hook_event_name": "PreToolUse", "session_id": "sess", "transcript_path": self.main_tp,
+             "agent_id": AID, "agent_type": "engineer", "tool_name": "Edit", "tool_input": {}}
+        r = subprocess.run([sys.executable, SCRIPT, "--config", self.cfg_path, "--state-dir", self.state],
+                           input=json.dumps(d), capture_output=True, text=True, timeout=10)
+        self.assertEqual(json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
+
+
+class TestCoordinatorLaneAlerts(Base):
+    def setUp(self):
+        super().setUp()
+        with open(os.path.join(self.tmp, "proj", "sess", "subagents", f"agent-{AID}.meta.json"), "w") as f:
+            json.dump({"agentType": "engineer", "description": "Port the parser"}, f)
+
+    def main_run(self, c, now):
+        return self.note(cg.run(self.inp(), self.args(), c, now))
+
+    def test_once_per_lane_and_level(self):
+        c = self.cfg(coordinator_compact_at=0)
+        self.set_ctx(self.sub_tp, 160_000)
+        self.sub_run(c, NOW)
+        out = self.main_run(c, NOW + 1)
+        self.assertIn('lane "Port the parser" (%s) is past its limit: context 160k, limit 150k' % AID[:8], out)
+        ctl = os.path.join(os.path.dirname(os.path.realpath(SCRIPT)), "context_guard_ctl.py")
+        self.assertIn('python3 %s --config %s set --agent %s --limit 190000 --for 60m --reason "..."'
+                      % (ctl, self.cfg_path, AID), out)
+        self.assertEqual(self.main_run(c, NOW + 40), "")               # once per lane and level
+        self.set_ctx(self.sub_tp, 172_000)
+        self.sub_run(c, NOW + 41)
+        self.assertEqual(self.main_run(c, NOW + 50), "")               # at most one scan per 30 s
+        self.assertIn("has reached its hard stop (context 172k, limit 150k)", self.main_run(c, NOW + 75))
+        self.assertEqual(self.main_run(c, NOW + 110), "")
+
+    def test_a_lane_that_passes_a_raised_limit_is_reported_again(self):
+        c = self.cfg(coordinator_compact_at=0)
+        self.set_ctx(self.sub_tp, 160_000)
+        self.sub_run(c, NOW)
+        self.assertIn("context 160k, limit 150k", self.main_run(c, NOW + 1))
+        ov = os.path.join(os.path.dirname(self.cfg_path), "context_guard.overrides.json")
+        with open(ov, "w") as f:
+            json.dump({"agents": {AID: {"limit": 170_000}}}, f)
+        self.set_ctx(self.sub_tp, 165_000)
+        self.sub_run(c, NOW + 40)
+        self.assertEqual(self.main_run(c, NOW + 41), "")               # below the raised limit: quiet
+        self.set_ctx(self.sub_tp, 175_000)
+        self.sub_run(c, NOW + 80)
+        self.assertIn("is past its limit: context 175k, limit 170k", self.main_run(c, NOW + 81))
+        self.assertEqual(self.main_run(c, NOW + 120), "")
+
+    def test_the_command_can_be_pasted_and_is_the_plugins_when_run_from_the_plugin(self):
+        self.cfg_path = os.path.join(self.tmp, "my project", "context_guard.json")
+        c = self.cfg(coordinator_compact_at=0)
+        self.set_ctx(self.sub_tp, 160_000)
+        self.sub_run(c, NOW)
+        out = self.main_run(c, NOW + 1)
+        self.assertIn(" --config '%s' set --agent %s " % (self.cfg_path, AID), out)
+        self.assertIn("python3 %s --config" % os.path.join(os.path.dirname(os.path.realpath(SCRIPT)),
+                                                          "context_guard_ctl.py"), out)
+        old = os.environ.get("CLAUDE_PLUGIN_ROOT")
+        os.environ["CLAUDE_PLUGIN_ROOT"] = os.path.dirname(os.path.dirname(os.path.realpath(SCRIPT)))
+        try:
+            self.assertEqual(cg.ctl_command(), "context-guard-ctl")
+            os.environ["CLAUDE_PLUGIN_ROOT"] = os.path.join(self.tmp, "another plugin")
+            self.assertTrue(cg.ctl_command().startswith("python3 "))
+        finally:
+            if old is None:
+                os.environ.pop("CLAUDE_PLUGIN_ROOT", None)
+            else:
+                os.environ["CLAUDE_PLUGIN_ROOT"] = old
+
+    def test_stale_lane_off_switch_and_type_fallback(self):
+        c = self.cfg(coordinator_compact_at=0)
+        self.set_ctx(self.sub_tp, 160_000)
+        self.sub_run(c, NOW)
+        self.assertEqual(self.main_run(c, NOW + 16 * 60), "")         # not updated in 15 minutes
+        shutil.rmtree(self.state)
+        self.sub_run(c, NOW)
+        self.assertEqual(self.main_run(self.cfg(coordinator_compact_at=0, coordinator_lane_alerts=False),
+                                       NOW + 1), "")
+        os.remove(os.path.join(self.tmp, "proj", "sess", "subagents", f"agent-{AID}.meta.json"))
+        shutil.rmtree(self.state)
+        self.sub_run(c, NOW)
+        self.assertIn('lane "engineer" (%s)' % AID[:8], self.main_run(c, NOW + 1))
+
+
+class TestConfigLookup(Base):
+    def setUp(self):
+        super().setUp()
+        self.env = {k: os.environ.get(k) for k in ("CLAUDE_PROJECT_DIR", "CONTEXT_GUARD_CONFIG")}
+        for k in self.env:
+            os.environ.pop(k, None)
+
+    def tearDown(self):
+        for k, v in self.env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        super().tearDown()
+
+    def test_walks_up_from_the_project_dir(self):
+        proj = os.path.join(self.tmp, "repo")
+        found = os.path.join(proj, ".claude", "hooks", "context_guard.json")
+        os.makedirs(os.path.dirname(found))
+        open(found, "w").close()
+        deep = os.path.join(proj, ".claude", "worktrees", "w1", "src")
+        os.makedirs(deep)
+        os.environ["CLAUDE_PROJECT_DIR"] = deep
+        self.assertEqual(cg.config_path(""), found)
+        self.assertEqual(cg.config_path("/x/c.json"), "/x/c.json")      # --config first
+        os.environ["CONTEXT_GUARD_CONFIG"] = "/y/c.json"
+        self.assertEqual(cg.config_path(""), "/y/c.json")               # then the variable
+        del os.environ["CONTEXT_GUARD_CONFIG"]
+        os.environ["CLAUDE_PROJECT_DIR"] = self.tmp
+        self.assertEqual(cg.config_path("", (deep,)), found)            # extra start (ctl: cwd)
+        self.assertEqual(os.path.basename(cg.config_path("")), "context_guard.json")   # beside the script
+
+    def test_require_config_is_silent_without_one(self):
+        bindir = os.path.join(self.tmp, "bin")
+        os.makedirs(bindir)
+        shutil.copy(SCRIPT, bindir)                                     # no config beside this copy
+        env = dict(os.environ, CLAUDE_PROJECT_DIR=os.path.join(self.tmp, "proj"))
+        argv = [sys.executable, os.path.join(bindir, "context_guard.py"), "--state-dir", self.state]
+        r = subprocess.run(argv + ["--require-config"], input=json.dumps(self.inp()), env=env,
+                           capture_output=True, text=True, timeout=10)
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
+        self.assertFalse(os.path.exists(self.state))
+        r = subprocess.run(argv + ["--require-config"], input=json.dumps(pre(timeout=600_000)), env=env,
+                           capture_output=True, text=True, timeout=10)
+        self.assertEqual(r.stdout, "")
+        r = subprocess.run(argv, input=json.dumps(self.inp()), env=env, capture_output=True, text=True, timeout=10)
+        self.assertIn("compact at the next natural point", r.stdout)    # without the flag: defaults
+
+    def test_relative_overrides_resolve_against_the_config_folder(self):
+        c = self.cfg(overrides_file="ov/o.json")
+        self.assertEqual(cg._path(c, c["overrides_file"]),
+                         os.path.join(os.path.dirname(self.cfg_path), "ov", "o.json"))
 
 
 if __name__ == "__main__":

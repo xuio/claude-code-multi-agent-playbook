@@ -20,6 +20,10 @@
   "slow_call_s": 300,
   "slow_call_cooldown_s": 3600,
   "bg_reminder_cooldown_s": 1800,
+  "stop_repeat_every": 10000,
+  "hard_stop_margin": 20000,
+  "hard_stop_grace_calls": 10,
+  "coordinator_lane_alerts": true,
   "notes_hint": "your notes file (notes/<your agent name>.md)",
   "state_dir": "~/.cache/context-guard",
   "log": "~/.cache/context-guard/notices.jsonl"

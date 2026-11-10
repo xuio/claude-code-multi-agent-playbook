@@ -14,9 +14,11 @@ A lane in an auto-cleaned worktree commits its notes on its branch instead (R-ho
 2. Create the agent definitions (section 6) and restart the session so they load (R-route-6).
 3. Create the files in section 2 (hints, duties registry, findings, resume sheet, rules block,
    quality log, dropped-levers list, orchestration log).
-4. Install the hooks from [hooks/](hooks/README.md): context guard (notices at the wrap-up point
-   and at the limit, foreground wait cap 270 s), Bash guard (no `cd`, no heavy local builds) and
-   the reminder after a compaction. Verify with one blocked test command each. If the coordinator
+4. Install the hooks from [hooks/](hooks/README.md), as copied scripts or once as the plugin
+   `playbook-hooks` (then the project holds only the config files): context guard (notices at the
+   wrap-up point and at the limit, a stop that holds for a lane that keeps going, foreground wait
+   cap 270 s), Bash guard (no `cd`, no heavy local builds) and the reminder after a compaction.
+   Verify with one blocked test command each. If the coordinator
    is to compact itself (R-loop-6), install the `self-compact` plugin
    ([plugins/self-compact/](plugins/self-compact/README.md)).
 5. With several build hosts, set up the job queue before the first wave (with one machine, skip
@@ -396,7 +398,9 @@ against the documentation of your version.
   and prints the log tail. An agent polls with it in the foreground and keeps its cache warm.
 
 [hooks/](hooks/README.md) holds the context guard, the command that changes its limits while
-agents run, the Bash guard and the reminder after a compaction (step 4 of section 1).
+agents run, the Bash guard and the reminder after a compaction (step 4 of section 1). With the
+plugin installed, the command is `context-guard-ctl` instead of
+`python3 .claude/hooks/context_guard_ctl.py`.
 
 [tools/agent_scan.py](tools/agent_scan.py) prints one line per agent of the running session:
 state, context against its limit, idle time, calls in the last hour, cache rewrites, and the

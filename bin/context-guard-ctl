@@ -1,0 +1,7 @@
+#!/bin/sh
+# The context guard's control command under a stable name. Claude Code puts a plugin's bin/
+# folder on the Bash tool's PATH while the plugin is enabled, so a coordinator can run
+#   context-guard-ctl show
+#   context-guard-ctl set --agent <agent id> --limit 200000 --for 90m --reason "..."
+# from the project folder. The config is found as the guard finds it (hooks/README.md).
+exec python3 -I "$(dirname "$0")/../hooks/context_guard_ctl.py" "$@"

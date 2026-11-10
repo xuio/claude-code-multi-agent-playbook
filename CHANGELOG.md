@@ -55,3 +55,32 @@
 - self-compact 0.5.1: `burstLimit` and `minContextTokens` default to 0 (off). They stay as
   options for sessions that fall into a compact-resume loop. The refusal of other tool calls
   after a request stays on by default.
+
+## 2026-11-10: a stop that holds, the hooks as a plugin, self-compact 0.6.0
+
+- `hooks/context_guard.py`: past its limit a lane gets the stop notice again for every 10k of
+  growth (`stop_repeat_every`); 20k past the limit (`hard_stop_margin`) it gets ten last tool
+  calls (`hard_stop_grace_calls`) and then every tool call is refused until the coordinator
+  raises its limit or its context falls. The coordinator gets one line per lane that passed its
+  limit or reached the hard stop, with the command that raises the limit
+  (`coordinator_lane_alerts`). Reason: of 580 lanes that got a notice, 22 ended more than 20k
+  past their limit. Both are on by default; existing installs must change the context guard's
+  PreToolUse matcher to `*` for the refusal to cover every tool (hooks/README.md).
+- The guard finds `.claude/hooks/context_guard.json` by walking up from the project folder (a
+  worktree below the project uses the project's file), does nothing with `--require-config`
+  when there is none, and handles a tool call once when it is registered twice (it remembers
+  the last 32 tool calls, so parallel calls are covered).
+- `hooks/compaction_log.py`: a `PreCompact` hook that logs one line per compaction with its
+  trigger (manual or automatic). No transcript content.
+- The hooks are also a plugin, `playbook-hooks` (root `.claude-plugin/plugin.json`,
+  `hooks/hooks.json`, `hooks/plugin-run.sh`, `bin/context-guard-ctl`): installed once, updated
+  with one command, active only in projects that have a config file in `.claude/hooks/`. A hook
+  that a project registers in its own settings is left to the project, so nothing runs twice
+  while a project moves from copied scripts to the plugin.
+- `plugins/self-compact/` 0.6.0, three options that are off by default: `remindAtTokens` (a
+  note asks the main agent to request a compaction; it comes again in a long turn after every
+  20k of growth), `autoCompactAtTokens` (the plugin compacts by itself at the end of a turn as a
+  safety net, carrying only the fixed texts) and `instructionsFile` (the fixed summary
+  instructions are read from a file at each compaction).
+- All of this has run under the tests (91 for the hooks, 54 for the plugin) and from the command
+  line, not yet in a long live session.

@@ -1,0 +1,62 @@
+{
+  "description": "Hooks of the multi-agent playbook. They act only in a project that has opted in with a config file in .claude/hooks/ (see hooks/README.md).",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|.*_Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 5,
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/plugin-run.sh\" bash-guard"
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 5,
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/plugin-run.sh\" guard"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 5,
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/plugin-run.sh\" guard"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 5,
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/plugin-run.sh\" after-compaction"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 5,
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/plugin-run.sh\" compaction-log"
+          }
+        ]
+      }
+    ]
+  }
+}
