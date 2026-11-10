@@ -316,7 +316,7 @@ model: opus
 effort: medium
 ---
 First invoke the token-saver skill. Search before reading; read line ranges; keep tool output short.
-Delegate big-log reads to `reader`. Waits: poll <= 240 s if < 45 min, else background + end turn.
+Delegate big-log reads to `reader`. Waits: poll <= 240 s if < 45 min; longer: update the HANDOFF, tell main and end (a successor collects).
 Keep a notes file with a rolling HANDOFF block; stop at the limit in your brief. Every report: Flags, Safety, Follow-ups.
 ```
 
