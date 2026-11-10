@@ -115,6 +115,11 @@ class PluginRunTest(unittest.TestCase):
             f.write("not json")
         self.assertEqual(self.run_hook(self.project, "guard", dict(WAIT, tool_input={"command": "ls"}))[0], 0)
 
+    def test_a_relative_project_folder_ends_the_search(self):
+        for folder in (".", "no/such/folder", ""):
+            for mode in ("guard", "after-compaction"):
+                self.assertEqual(self.run_hook(folder, mode, WAIT), (0, "", ""), (folder, mode))
+
     def test_hooks_json_names_only_modes_the_wrapper_knows(self):
         with open(os.path.join(HOOKS, "hooks.json")) as f:
             registered = json.load(f)["hooks"]

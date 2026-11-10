@@ -82,5 +82,5 @@
   20k of growth), `autoCompactAtTokens` (the plugin compacts by itself at the end of a turn as a
   safety net, carrying only the fixed texts) and `instructionsFile` (the fixed summary
   instructions are read from a file at each compaction).
-- All of this has run under the tests (91 for the hooks, 54 for the plugin) and from the command
+- All of this has run under the tests (92 for the hooks, 54 for the plugin) and from the command
   line, not yet in a long live session.

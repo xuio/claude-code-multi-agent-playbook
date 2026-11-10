@@ -15,7 +15,7 @@ a plugin ([Install as a plugin](#install-as-a-plugin)).
 | `settings.example.json` | The hook entries for `.claude/settings.json` | |
 | `*.example.json` | Example configs | |
 | `hooks.json`, `plugin-run.sh`, `../bin/context-guard-ctl` | The same hooks packaged as the plugin `playbook-hooks` | |
-| `tests/` | `python3 -m unittest discover -s hooks/tests` (91 tests) | |
+| `tests/` | `python3 -m unittest discover -s hooks/tests` (92 tests) | |
 
 ## Install
 

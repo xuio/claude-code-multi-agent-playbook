@@ -25,8 +25,9 @@ find_up() {   # $1 = file name; prints the .claude/hooks folder that holds it
       printf '%s\n' "$d/.claude/hooks"
       return 0
     fi
-    [ "$d" = "/" ] && break
-    d=$(dirname "$d")
+    up=$(dirname "$d")
+    [ "$up" = "$d" ] && break      # the root, or a relative folder: stop
+    d=$up
   done
   return 1
 }
