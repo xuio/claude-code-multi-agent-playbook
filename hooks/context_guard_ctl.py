@@ -134,7 +134,8 @@ def cmd_show(cfg, path, now):
     print("  lanes: limit %dk, wrap-up from %dk" % (lim // 1000, w // 1000) if lim else "  lanes: no context notices")
     for t, e in sorted(cfg["agent_types"].items()):
         _, tw, tl = cg.limits_for(cfg, t)
-        print("  type %-16s limit %dk, wrap-up from %dk" % (t, tl // 1000, tw // 1000))
+        print("  type %-16s limit %dk, wrap-up from %dk%s" % (t, tl // 1000, tw // 1000,
+                                                              ", deliverable report" if cg.is_report(cfg, t) else ""))
     print("  coordinator: compaction notice at %dk" % (cfg["coordinator_compact_at"] // 1000)
           if cfg["coordinator_compact_at"] else "  coordinator: no compaction notice")
     data = read_raw(path)

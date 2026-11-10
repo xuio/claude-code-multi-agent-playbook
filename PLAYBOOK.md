@@ -126,6 +126,25 @@ Words used throughout:
 - Check: a byte budget per definition (e.g. 10 kB); a new rule replaces one or justifies its
   bytes; rules that only some phases need go into briefs.
 
+**R-route-8. TRIAL, not yet measured: a reader builds a source index before a consultant starts.**
+1. The coordinator starts a reader first: the cheap model for logs and code maps, a strong worker
+   for papers and design documents, where judging relevance is harder.
+2. The reader writes a source index to a file. Per source: the path, the line range, a verbatim
+   quote, and one line on why it matters. Plus a coverage list that marks every source it was
+   given as read in full, searched, or not opened.
+3. The consultant gets the question and the index. It opens the ranges itself and reads the few
+   key sources in full when the decision depends on completeness. Under "Found outside the index"
+   it lists each relevant passage the index missed.
+- Why pointers and not summaries: a reader can miss a passage but must not be able to distort one.
+  Readers got totals right and categories wrong, and reported a mismatch without a flag (R-route-3),
+  so their summaries cannot carry a judgment `[I]`. Why the reader runs first and is not started by
+  the consultant: an agent that waits more than 5 minutes for a child writes its whole context
+  again (R-ctx-1), and the coordinator sees a reader it started itself `[P][O]`.
+- Measure: how many consultants finish under the standard lane limit with a complete report, and
+  how long the "Found outside the index" lists are. Stop if those lists are not short. Until then
+  this is `[O]`.
+- Check: the source-index brief template (STARTER-KIT section 3.5).
+
 ### 2.2 Reasoning effort
 
 | role | effort |
@@ -195,6 +214,7 @@ coordinator.** Size work in phases that end in a deliverable.
   | many short, similar tasks on a lean agent file (fan-out judging, page fixes, extraction) | 80k, plus `maxTurns` in the agent file | `[O]` estimate; here the limit is a guard against runaways, and tasks should end far below it |
   | standard lane with one deliverable (default) | 150k | `[U]` a chosen setting, not a measured optimum. Measured `[M]`: 7 lanes told to hand off at 200k all ran out at 132-150k; lanes with 100-110k triggers ended at 130-158k. Where your lanes run out before their limit, lower it |
   | long, complex work that must hold much context at once (design, cross-module change, multi-host build setup) | 160k | `[I]` 3 of 6 agents at 120-150k handed off during setup with no result |
+  | report-only consultant on the strongest model (R-loop-17) | 200k, wrap-up from 170k | `[M]` 2 of 5 consultants hit 150k before their report was finished; an earlier one needed 200k |
   | coordinator | self-compacts from ~180k (R-loop-6) | `[U]` |
   | cheap-model reader | prompt < 100k (R-route-2) | `[P]` |
 
@@ -619,10 +639,14 @@ to a successor coordinator; it continues through compactions `[U]`.
   700 words (what the user asked, what was answered or promised, decisions and results with file
   paths, what was in progress). No rules, earlier history or file contents; those live in files.
 - The carry block (<= 1.5 KB, written fresh) holds the exact next step, the lanes the coordinator
-  waits on (name -> expected event), background shells by purpose, open user asks and at most 3
-  files to open first. No rules and no results.
-- After every compaction read the RULES DIGEST (R-book-3) fully, then the hints entries newer than
-  its `covers through line N` header; grep the hints file for specifics, never read it whole.
+  waits on (name -> expected event), background shells by purpose and, for each job that has to be
+  started again, its exact command (R-loop-15), open user asks and at most 3 files to open first.
+  No rules and no results.
+- Where the summary and the carry disagree, the carry wins: the coordinator wrote the carry itself
+  just before the compaction.
+- After every compaction read the RULES DIGEST (R-book-3) fully, then run the orientation script
+  (R-loop-16); it prints the hints entries newer than the digest's `covers through line N` header.
+  Grep the hints file for specifics, never read it whole.
 - Why: a full read of a 420 KB / ~1,060-line hints file put the coordinator at ~266k right after a
   compaction, past its own compaction target, and every later call paid for it again `[M][U]`.
 - In the first reply after a compaction, write: "rules digest read (hints through line N), newest
@@ -637,7 +661,11 @@ to a successor coordinator; it continues through compactions `[U]`.
   compaction has run. From 0.6.0 it can also remind a coordinator that does not ask
   (`remindAtTokens`), compact by itself at the end of a turn as a safety net
   (`autoCompactAtTokens`, nothing but the fixed texts is carried), and read the fixed
-  instructions from the project file (`instructionsFile`). A `SessionStart` hook with the
+  instructions from the project file (`instructionsFile`). From 0.6.1, when another message
+  starts the next turn before the resume prompt, the plugin holds the resume prompt back. It
+  sends it after that turn only if the turn made fewer than 10 tool calls (option
+  `resumeSkipAfterToolCalls`; 0 = always send; keep it above the calls your orientation after
+  a compaction takes, 7 or 8 with the starter kit's checklist). The coordinator still acts on the carry's next step at once. A `SessionStart` hook with the
   matcher `compact` (`hooks/after-compaction.example.txt`) prints the reminder to read the
   digest, and `hooks/compaction_log.py` logs every compaction with its trigger, which shows how
   often the automatic one still fires.
@@ -678,6 +706,50 @@ results), in batched check-ins triggered by content: due once a result or decisi
 run a throwaway probe once and check which model and configuration it started with.
 - Why: a morning check died in 1.5 s on a model id that was no longer available `[I]`.
 
+**R-loop-15. A job that must be started again carries its own command.** A recurring background
+job (sweep timer, watcher) is started by a script kept in the repository. The script prints the
+command that starts it again as its last output line. The carry block lists the background shells
+by purpose and, for each job that has to be started again, the exact command.
+- Why: after one compaction, the completion notice of a 30-minute sweep timer was the first thing
+  to arrive. Neither the summary nor the carry held its command; the carry rule then said
+  "background shells by purpose only". The coordinator recovered the command from the session
+  transcript with 4 tool calls, one of them a grep with 1,148 matches `[I]`. Live background shells
+  are shown again after a compaction; finished ones are not `[P]`.
+- Check: the carry template has a line for restart commands. Tool: `tools/sweep_timer.sh <minutes>
+  <command>` ends with `RE-ARM: <command line>`, so the completion notice carries the next round.
+
+**R-loop-16. Orientation after a compaction is one script.** After a compaction the coordinator
+reads the rules digest once and runs one script. The script prints the hints lines newer than the
+digest header, the head of the state file, the live lanes, the tail of the duties log, and the size
+of each capped file against its cap.
+- Why: the orientation commands sat as prose in the instructions file and were copied by hand at
+  every compaction. The digest went 58 bytes over its cap, and that was noticed only at the next
+  sweep `[I]`. A cap is checked where the file is written and where it is read.
+- Check: the after-compaction hook names the script. Tool: `tools/orient.sh` (file names set at its
+  top or from the environment); it prints `OK` or `OVER` per capped file and always exits 0.
+
+**R-loop-17. An agent whose deliverable is a report writes the report file first.** A consultant,
+advisor or reviewer creates its report file with an outline right after orientation and fills it
+as it goes. A stop at any point then leaves a usable report. Its agent type gets
+`"deliverable": "report"` in the context guard's `agent_types`, so the guard's notices say "write
+your report file now", not "update HANDOFF and commit". Limit: 200k, wrap-up from 170k, for a
+report-only consultant on the strongest model (R-ctx-3 table).
+- Why: in one planning round, 2 of 5 consultants reached the 150k lane limit before their report
+  was finished. One was raised to 190k by hand; one stopped at 142k with sources unread. An earlier
+  one had needed 200k `[M]`. The report is the whole deliverable, so a stop before it is pure loss.
+  The guard's notices asked for a HANDOFF block and a commit, which a read-only agent has not got
+  `[O]`.
+- Check: the consultant definition (STARTER-KIT section 6) says "report file first"; the guard
+  config marks its type as a report type.
+
+**R-loop-18. A completion notice for a lane that is already closed: check its last activity, do
+not read its output.** The lane ledger records when each lane was closed. Run
+`tools/agent_scan.py --agent <id> --since <closing time>`; one call says whether the agent did
+anything since.
+- Why: after a compaction, a notice came back for an agent that had finished hours before. The
+  coordinator read its output to rule out new work `[I]`.
+- Check: the lane ledger has a `closed` column (STARTER-KIT section 2.5).
+
 ## 7. Bookkeeping
 
 | artifact | purpose | updated by | format |
@@ -692,6 +764,7 @@ run a throwaway probe once and check which model and configuration it started wi
 | orchestration log | hourly row: quota, burn, $/h, live agents, slots, alerts, action | coordinator | table row |
 | dashboard state | status rows, trains, goal metric, quota | bookkeeping script + importers | JSON lines |
 | ledger | merges/trains: commits, evidence ids, verdicts | merge steward | JSON lines |
+| lane ledger | one row per lane: agent id, state (`live`/`closed`), opened, closed (time from `date`) | coordinator, at launch and at close | table row; a late notice for a closed lane is checked against its closing time (R-loop-18) |
 
 **R-book-1. One bookkeeping script per event** (`launch`, `finish`, `push`, `note`) that updates all
 state files at once.
@@ -710,7 +783,7 @@ a short rules digest that is re-read after every compaction. See STARTER-KIT for
 
 - Each entry: `FACT <date>: <fact> / WHY: <incident> / CHECK: <enforcement or "hint only: reason">`.
 - User decisions: `USER <date time>: "<verbatim quote>" -> <what it means>`.
-- Keep a RULES DIGEST next to it (hard cap 15 KB, 400 bytes per line): every user decision and
+- Keep a RULES DIGEST next to it (hard cap 15,000 bytes, 400 bytes per line): every user decision and
   standing rule still in force, one line each with its hints line number, and a
   `covers through line N` header. Results, status words and decision chains stay in the hints
   file; rules that only some actions need move to topic files read by a trigger line. A digest
@@ -1142,6 +1215,10 @@ these: `git status --short`, then wait or stash.
 | rewritten checkout | a history rewrite destroys a lane's uncommitted edits | no rewrite or reset while lanes work there | R-safe-11 |
 | "0 tests" misread | a test runner prints one "Executed N" line per bundle, most of them 0 | briefs name the bundle or summary line to read | R-brief-1 |
 | rule text in the wrong file | rules found only in an evidence table nobody reads | one file holds the text of every rule | §14 |
+| lost restart command | a finished timer's notice arrives after a compaction; its command is in neither summary nor carry | the job prints its own restart command; the carry lists it | R-loop-15 |
+| hand-copied orientation | a capped file runs over its cap unnoticed until the next sweep | one orientation script that also checks caps | R-loop-16 |
+| report never written | a consultant hits its limit with sources unread and no report | report file first, report-type guard notices, higher limit | R-loop-17 |
+| re-reading a closed lane | a late notice makes the coordinator read a finished agent's output | check activity since the closing time in one call | R-loop-18 |
 
 ## 14. Governance of the playbook itself
 

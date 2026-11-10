@@ -15,7 +15,7 @@ a plugin ([Install as a plugin](#install-as-a-plugin)).
 | `settings.example.json` | The hook entries for `.claude/settings.json` | |
 | `*.example.json` | Example configs | |
 | `hooks.json`, `plugin-run.sh`, `../bin/context-guard-ctl` | The same hooks packaged as the plugin `playbook-hooks` | |
-| `tests/` | `python3 -m unittest discover -s hooks/tests` (92 tests) | |
+| `tests/` | `python3 -m unittest discover -s hooks/tests` (100 tests) | |
 
 ## Install
 
@@ -158,7 +158,7 @@ optional.
 |---|---|---|
 | `lane_limit` | 150000 | Context limit of a sub-agent. 0 = no context notices for sub-agents. |
 | `wrapup_margin` | 20000 | The wrap-up notice comes this many tokens before the limit. |
-| `agent_types` | `{}` | Limits per agent type: `{"batch-worker": {"limit": 80000, "wrapup_margin": 10000}}` |
+| `agent_types` | `{}` | Limits per agent type: `{"batch-worker": {"limit": 80000, "wrapup_margin": 10000}}`. `"deliverable": "report"` gives that type report wording: its notices ask it to write and finish its report file, not to update a HANDOFF block, commit or push. A read-only agent whose only output is a report has none of those, and without this it can reach its limit with the report unwritten. Overrides change its limits, never its wording. |
 | `skip_agent_types` | `[]` | Agent types the hook leaves alone. |
 | `coordinator_compact_at` | 180000 | Compaction notice for the main session. 0 = off. |
 | `overrides_file` | `context_guard.overrides.json` | The dynamic layer, see below. |
@@ -167,7 +167,7 @@ optional.
 | `slow_call_s`, `slow_call_cooldown_s` | 300, 3600 | Slow-call notice and how often at most. |
 | `bg_reminder_cooldown_s` | 1800 | Background-job reminder: how often at most. |
 | `rearm_margin` | 10000 | A notice comes back after the context fell this far below its point. |
-| `notes_hint` | `your notes file` | How the notices name the place of the HANDOFF block. |
+| `notes_hint` | `your notes file` | How the notices name the place of the HANDOFF block. Not used for report types. |
 | `state_dir` | `~/.cache/context-guard` | One small state file per (session, agent). Files older than 7 days are removed when the guard next gives a notice. |
 | `log` | off | A JSON-lines file with one line per notice and denial. |
 | `stop_repeat_every` | 10000 | Past its limit, the stop notice comes again each time the context grew this much. 0 = once only. |

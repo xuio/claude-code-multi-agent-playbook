@@ -33,6 +33,16 @@ Usage:
            without it 150k per lane, wrap-up 20k earlier, coordinator 180k),
            --all (also agents that ended or went stale), --json
 
+One sub-agent in detail ("did it do anything since I closed it?"):
+  agent_scan.py --agent a1b2c3d4      one block: type, description, state, context and limit,
+                                      first and last activity, tool calls, its last text
+  agent_scan.py --agent a1b2 --since 14:30
+                                      adds one line: its activity since then. --since takes HH:MM
+                                      (today, or yesterday if that is still to come), an ISO date-time,
+                                      or 90m / 2h (that long ago). The line names the date and time
+                                      it used, so a time read as yesterday shows
+  The id may be a unique prefix. With --json the block is one JSON object.
+
 Python 3.8+, standard library only.
 """
 import argparse
@@ -135,6 +145,15 @@ def limit_for(cfg, agent_type, is_main, agent_id=None):
     return limit, (limit - margin if 0 < margin < limit else limit)
 
 
+def parse_ts(ts):
+    """A transcript timestamp as a time with an offset (one without an offset is UTC), or None."""
+    try:
+        t = datetime.datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return t if t.tzinfo is not None else t.replace(tzinfo=datetime.timezone.utc)
+
+
 def scan(path, now):
     """Facts about one transcript, from its timestamps, usage numbers and tool names only."""
     r = {"calls_1h": 0, "polls_1h": 0, "edits_1h": 0, "ctx": 0, "peak": 0, "model_calls": 0,
@@ -153,9 +172,8 @@ def scan(path, now):
             kind, ts = d.get("type"), d.get("timestamp")
             if kind not in ("assistant", "user") or not ts:
                 continue
-            try:
-                t = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
-            except ValueError:
+            t = parse_ts(ts)
+            if t is None:
                 continue
             r["first"] = r["first"] or t
             r["last"] = t
@@ -229,6 +247,148 @@ def describe(name, kind, state, r, limit, wrapup, now):
             "flags": flags}
 
 
+def agent_state(meta, r, now):
+    """running, ended or stale: from the sub-agent's meta file and its transcript scan."""
+    idle_m = (now - r["last"]).total_seconds() / 60 if r["last"] else 0.0
+    if meta.get("finished") is True or (meta.get("finished") is None and r["stop"] == "end_turn"):
+        return "ended"
+    return "stale" if idle_m > STALE_MIN else "running"
+
+
+def read_meta(path):
+    """The sub-agent's .meta.json beside its transcript, or {}."""
+    try:
+        with open(path[:-len(".jsonl")] + ".meta.json") as f:
+            meta = json.load(f)
+        return meta if isinstance(meta, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def sub_agents(session):
+    """[(agent id, transcript path)] of the session's sub-agents."""
+    sub_dir = os.path.join(session[:-len(".jsonl")], "subagents")
+    return [(os.path.basename(p)[len("agent-"):-len(".jsonl")], p)
+            for p in sorted(glob.glob(os.path.join(sub_dir, "agent-*.jsonl")))]
+
+
+def parse_since(text, now):
+    """The UTC time that `--since` names: HH:MM (local, today; yesterday if still to come), an ISO
+    date-time (local if it has no offset), or <N>m / <N>h ago. None if it cannot be read."""
+    text = str(text).strip()
+    m = re.fullmatch(r"(\d+)([mh])", text)
+    if m:
+        return now - datetime.timedelta(minutes=int(m.group(1)) * (60 if m.group(2) == "h" else 1))
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", text)
+    if m:
+        if int(m.group(1)) > 23 or int(m.group(2)) > 59:
+            return None
+        local = now.astimezone()
+        t = local.replace(hour=int(m.group(1)), minute=int(m.group(2)), second=0, microsecond=0)
+        if t > local:
+            t -= datetime.timedelta(days=1)
+        return t.astimezone(datetime.timezone.utc)
+    try:
+        t = datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if t.tzinfo is None:
+        t = t.astimezone()                    # no offset: local time
+    return t.astimezone(datetime.timezone.utc)
+
+
+def activity(path, since):
+    """Tool calls, the last assistant text, and (with `since`) the activity from then on. Reads the
+    transcript line by line, as scan() does; keeps only the last text."""
+    r = {"tool_calls": 0, "last_text": "", "since_messages": 0, "since_calls": 0, "since_last": None}
+    seen = set()
+    with open(path, errors="replace") as f:
+        for line in f:
+            if '"assistant"' not in line:
+                continue
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            m = d.get("message") or {}
+            if d.get("type") != "assistant" or m.get("model") == "<synthetic>":
+                continue
+            content = m.get("content") if isinstance(m.get("content"), list) else []
+            calls = sum(1 for b in content if isinstance(b, dict) and b.get("type") == "tool_use")
+            r["tool_calls"] += calls
+            texts = [b.get("text") for b in content
+                     if isinstance(b, dict) and b.get("type") == "text" and str(b.get("text") or "").strip()]
+            if texts:
+                r["last_text"] = " ".join(str(x) for x in texts)
+            if since is None:
+                continue
+            t = parse_ts(d.get("timestamp"))
+            if t is None or t < since:
+                continue
+            mid = m.get("id")
+            if mid is None or mid not in seen:
+                seen.add(mid)
+                r["since_messages"] += 1
+            r["since_calls"] += calls
+            r["since_last"] = t
+    return r
+
+
+def _local(t, fmt="%Y-%m-%d %H:%M"):
+    return t.astimezone().strftime(fmt) if t else None
+
+
+def agent_detail(session, cfg, now, prefix, since=None, since_text=None):
+    """(detail dict, None) for the one sub-agent whose id starts with `prefix`, or (None, error text)."""
+    found = [(aid, p) for aid, p in sub_agents(session) if aid.startswith(prefix)]
+    exact = [(aid, p) for aid, p in found if aid == prefix]
+    found = exact or found
+    if not found:
+        return None, "no sub-agent with id %s in %s" % (prefix, session)
+    if len(found) > 1:
+        lines = ["%d sub-agents match %s:" % (len(found), prefix)]
+        for aid, p in found:
+            meta = read_meta(p)
+            lines.append("  %s  %s  %s" % (aid, meta.get("agentType") or "?", meta.get("description") or ""))
+        return None, "\n".join(lines)
+    aid, path = found[0]
+    meta = read_meta(path)
+    r = scan(path, now)
+    a = activity(path, since)
+    kind = str(meta.get("agentType") or "?")
+    limit, _ = limit_for(cfg, kind, False, aid)
+    text = " ".join(a["last_text"].split())
+    out = {"id": aid, "type": kind, "description": str(meta.get("description") or ""),
+           "state": agent_state(meta, r, now), "ctx": r["ctx"], "limit": limit, "peak": r["peak"],
+           "first": _local(r["first"]), "last": _local(r["last"]),
+           "idle_min": round((now - r["last"]).total_seconds() / 60, 1) if r["last"] else None,
+           "tool_calls": a["tool_calls"], "last_text": text[:300]}
+    if since is not None:
+        out["since"] = {"when": since_text, "from": _local(since), "assistant_messages": a["since_messages"],
+                        "tool_calls": a["since_calls"], "last": _local(a["since_last"])}
+    return out, None
+
+
+def fmt_detail(d):
+    k = lambda n: "%dk" % round(n / 1000)     # noqa: E731
+    lines = ["agent %s  %s  %s" % (d["id"], d["type"], d["description"]),
+             "  state      %s" % d["state"],
+             "  context    %s of %s (peak %s)" % (k(d["ctx"]), k(d["limit"]) if d["limit"] else "no limit",
+                                                  k(d["peak"])),
+             "  first      %s" % (d["first"] or "-"),
+             "  last       %s (%s min ago)" % (d["last"], d["idle_min"]) if d["last"] else "  last       -",
+             "  tool calls %d" % d["tool_calls"],
+             "  last text  %s" % (d["last_text"] or "-")]
+    s = d.get("since")
+    if s is not None:                         # the resolved date and time, not the text that was typed
+        if s["assistant_messages"] or s["tool_calls"]:
+            lines.append("  since %s: %d assistant messages, %d tool calls, last at %s"
+                         % (s["from"], s["assistant_messages"], s["tool_calls"], s["last"]))
+        else:
+            lines.append("  since %s: no activity" % s["from"])
+    return "\n".join(lines)
+
+
 def rows(session, cfg, now, show_all):
     out = []
     r = scan(session, now)
@@ -237,18 +397,9 @@ def rows(session, cfg, now, show_all):
     sub_dir = os.path.join(session[:-len(".jsonl")], "subagents")
     for path in sorted(glob.glob(os.path.join(sub_dir, "agent-*.jsonl")), key=os.path.getmtime):
         aid = os.path.basename(path)[len("agent-"):-len(".jsonl")]
-        meta = {}
-        try:
-            with open(path[:-len(".jsonl")] + ".meta.json") as f:
-                meta = json.load(f)
-        except (OSError, ValueError):
-            pass
+        meta = read_meta(path)
         r = scan(path, now)
-        idle_m = (now - r["last"]).total_seconds() / 60 if r["last"] else 0.0
-        if meta.get("finished") is True or (meta.get("finished") is None and r["stop"] == "end_turn"):
-            state = "ended"
-        else:
-            state = "stale" if idle_m > STALE_MIN else "running"
+        state = agent_state(meta, r, now)
         if state != "running" and not show_all:
             continue
         kind = str(meta.get("agentType") or "?")
@@ -275,13 +426,34 @@ def main(argv=None):
     p.add_argument("--config", default="", help="the context guard's config (context_guard.json): limits and overrides")
     p.add_argument("--all", action="store_true", help="also list agents that ended")
     p.add_argument("--json", action="store_true")
+    p.add_argument("--agent", metavar="ID",
+                   help="one sub-agent in detail; a full id or a unique prefix (example: --agent a1b2c3d4)")
+    p.add_argument("--since", metavar="WHEN",
+                   help="with --agent: its activity since HH:MM, an ISO date-time, or 90m / 2h ago "
+                        "(example: --since 14:30)")
+    p.add_argument("--now", metavar="ISO", help=argparse.SUPPRESS)   # a fixed "now", for tests
     args = p.parse_args(argv)
+    if args.since and not args.agent:
+        p.error("--since needs --agent")
     session = args.session or newest_session(project_dir(args.project))
     if not session or not os.path.isfile(session):
         print("no session transcript found (looked in %s); pass --session FILE.jsonl"
               % (args.session or project_dir(args.project)), file=sys.stderr)
         return 1
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = parse_since(args.now, datetime.datetime.now(datetime.timezone.utc)) if args.now else None
+    if args.now and now is None:
+        p.error("--now: not an ISO date-time")
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    if args.agent:
+        since = parse_since(args.since, now) if args.since else None
+        if args.since and since is None:
+            p.error("--since: use HH:MM, an ISO date-time, or <N>m / <N>h")
+        d, err = agent_detail(session, load_limits(args.config, now), now, args.agent, since, args.since)
+        if err:
+            print(err, file=sys.stderr)
+            return 1
+        print(json.dumps(d, indent=1) if args.json else fmt_detail(d))
+        return 0
     out = rows(session, load_limits(args.config, now), now, args.all)
     if args.json:
         print(json.dumps(out, indent=1))

@@ -11,6 +11,11 @@
     },
     "Explore": {
       "limit": 100000
+    },
+    "consultant": {
+      "limit": 200000,
+      "wrapup_margin": 30000,
+      "deliverable": "report"
     }
   },
   "skip_agent_types": [],

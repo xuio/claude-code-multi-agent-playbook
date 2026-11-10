@@ -50,7 +50,7 @@ DEFAULTS = {
     "lane_limit": 150_000,              # sub-agent: stop here (0 = no context notices for sub-agents)
     "wrapup_margin": 20_000,            # sub-agent: wrap-up notice this many tokens before the limit
     "coordinator_compact_at": 180_000,  # main session: compaction notice (0 = off)
-    "agent_types": {},                  # {"<agent type>": {"limit": int, "wrapup_margin": int}}
+    "agent_types": {},                  # {"<agent type>": {"limit": int, "wrapup_margin": int, "deliverable": "report"}}
     "skip_agent_types": [],             # agent types this hook leaves alone
     "overrides_file": "context_guard.overrides.json",   # the coordinator's dynamic layer, see load_overrides()
     "wait_cap_ms": 270_000,             # PreToolUse: foreground Bash timeout above this is denied
@@ -102,6 +102,26 @@ HARD_START = ("context {k}k: hard stop ({f}k limit + {m}k). You have {n} more to
 HARD_LEFT = "hard stop: {n} tool calls left, then every tool call is refused. End with your handoff report."
 HARD_DENY = ("context {k}k against your {f}k limit: your tool calls are refused. End your turn now with your "
              "handoff report as your final message. The coordinator can lift this by raising your limit.")
+# Report lanes ("deliverable": "report" in their agent type): a read-only agent whose only output is a
+# report file has no HANDOFF block and nothing to commit, so its notices ask for the report instead.
+R_WRAPUP = ("context {k}k: {m}k left before your {f}k limit. Open no new sources. Write your report file now "
+            "from what you have, and list in it what you did not read.")
+R_LIMIT = ("context {k}k is past your {f}k limit: stop now. Finish your report file (findings, what you left "
+           "unread, open questions) and end your turn.")
+R_NOTE = ("context {k}k: write what you have found so far into your report file now, then continue "
+          "(limit {f}k).")
+R_REPEAT = ("context {k}k is {p}k past your {f}k limit: stop now. Finish your report file (findings, what you "
+            "left unread, open questions) and end your turn.{h}")
+R_HARD_START = ("context {k}k: hard stop ({f}k limit + {m}k). You have {n} more tool calls to finish your "
+                "report file; after that every tool call is refused.")
+R_HARD_LEFT = ("hard stop: {n} tool calls left to finish your report file, then every tool call is refused.")
+R_HARD_DENY = ("context {k}k against your {f}k limit: your tool calls are refused. End your turn now and say "
+               "in your final message what is missing from your report file. The coordinator can lift this "
+               "by raising your limit.")
+R_BG = ("a background job is running. Poll it in the foreground with checks of at most 240 s (for example "
+        "bgwait.sh <log> 240). Do not end your turn to be woken later: after 5 idle minutes your whole context "
+        "is written again. If the job will run longer than about 45 minutes, write what you have into your "
+        "report file, tell the coordinator and end.")
 LANE_OVER = ("lane {name} is past its limit: context {k}k, limit {f}k. To raise it: {cmd}")
 LANE_HARD = ("lane {name} has reached its hard stop (context {k}k, limit {f}k): its tool calls are refused "
              "after its grace calls. To lift it: {cmd}")
@@ -237,6 +257,13 @@ def limits_for(cfg: dict, agent_type) -> tuple:
         if _int(e.get("wrapup_margin")) is not None:
             margin = e["wrapup_margin"]
     return None, _wrapup(limit, margin), limit
+
+
+def is_report(cfg: dict, agent_type) -> bool:
+    """True when the agent type's deliverable is a report file ("deliverable": "report"): its notices
+    ask for the report instead of a HANDOFF block and a commit. Overrides never change this."""
+    e = cfg["agent_types"].get(agent_type) if isinstance(agent_type, str) else None
+    return isinstance(e, dict) and e.get("deliverable") == "report"
 
 
 def _active(entry, now: float):
@@ -379,7 +406,8 @@ def hard_stop_pre(inp: dict, a: SimpleNamespace, cfg: dict, now=None):
         ctx = fresh
     out = json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse", "permissionDecision": "deny",
-        "permissionDecisionReason": "[context-guard] " + HARD_DENY.format(k=ctx // 1000, f=limit // 1000)}})
+        "permissionDecisionReason": "[context-guard] " + (
+            R_HARD_DENY if is_report(cfg, inp.get("agent_type")) else HARD_DENY).format(k=ctx // 1000, f=limit // 1000)}})
     return out, {"ts": now, "event": "PreToolUse", "deny": "hard_stop", "agent_id": aid,
                  "agent_type": inp.get("agent_type"), "tool": inp.get("tool_name"), "ctx": ctx, "limit": limit}
 
@@ -558,12 +586,20 @@ def first_line_contains(path: str, needle: str) -> bool:
     return needle.encode() in head.split(b"\n", 1)[0]
 
 
-def decide(state: dict, ctx, is_sub: bool, th, wait_s, now: float, cfg: dict, bg_job=None) -> list:
+def decide(state: dict, ctx, is_sub: bool, th, wait_s, now: float, cfg: dict, bg_job=None,
+           report=False) -> list:
     """Pure decision step: updates `state` in place and returns the notices to emit.
-    `th` is (note, wrapup, limit) for a sub-agent and the compaction point for the main session."""
+    `th` is (note, wrapup, limit) for a sub-agent and the compaction point for the main session.
+    `report`: the sub-agent's deliverable is a report file, so its notices use the report wording."""
     out = []
     fired = set(state.get("fired", []))
     notes = cfg["notes_hint"]
+    if report:
+        T_LIMIT, T_WRAPUP, T_NOTE, T_REPEAT = R_LIMIT, R_WRAPUP, R_NOTE, R_REPEAT
+        T_HARD_START, T_HARD_LEFT, T_BG = R_HARD_START, R_HARD_LEFT, R_BG
+    else:
+        T_LIMIT, T_WRAPUP, T_NOTE, T_REPEAT = LIMIT, WRAPUP, NOTE, REPEAT
+        T_HARD_START, T_HARD_LEFT, T_BG = HARD_START, HARD_LEFT, BG
     if is_sub:
         old, new = state.get("limit"), th[2]
         if old is not None and old != new:
@@ -590,12 +626,12 @@ def decide(state: dict, ctx, is_sub: bool, th, wait_s, now: float, cfg: dict, bg
             if not is_sub:
                 out.append(MAIN.format(k=k))
             elif top == limit:
-                out.append(LIMIT.format(k=k, f=limit // 1000, notes=notes))
+                out.append(T_LIMIT.format(k=k, f=limit // 1000, notes=notes))
                 state["stop_ctx"] = ctx
             elif top == wrapup:
-                out.append(WRAPUP.format(k=k, f=limit // 1000, m=(limit - ctx) // 1000, notes=notes))
+                out.append(T_WRAPUP.format(k=k, f=limit // 1000, m=(limit - ctx) // 1000, notes=notes))
             else:
-                out.append(NOTE.format(k=k, f=limit // 1000, notes=notes))
+                out.append(T_NOTE.format(k=k, f=limit // 1000, notes=notes))
             fired.update(t for t in ths if ctx >= t)   # a jump past several fires only the top one
         state["fired"] = sorted(fired)
         if is_sub and limit:
@@ -607,18 +643,18 @@ def decide(state: dict, ctx, is_sub: bool, th, wait_s, now: float, cfg: dict, bg
                 grace = cfg["hard_stop_grace_calls"]
                 if not isinstance(h, dict) or h.get("limit") != limit:
                     state["hard"] = {"limit": limit, "used": 0}
-                    out.append(HARD_START.format(k=ctx // 1000, f=limit // 1000,
+                    out.append(T_HARD_START.format(k=ctx // 1000, f=limit // 1000,
                                                  m=cfg["hard_stop_margin"] // 1000, n=grace))
                 else:
                     h["used"] = min(int(h.get("used") or 0) + 1, grace + 1)
-                    out.append(HARD_LEFT.format(n=max(grace - h["used"], 0)))
+                    out.append(T_HARD_LEFT.format(n=max(grace - h["used"], 0)))
                 state["stop_ctx"] = ctx
             else:
                 state.pop("hard", None)       # the context fell or the limit was raised: lifted
                 every = cfg["stop_repeat_every"]
                 sc = state.get("stop_ctx")
                 if every > 0 and isinstance(sc, int) and ctx >= sc + every and ctx >= limit:
-                    out.append(REPEAT.format(
+                    out.append(T_REPEAT.format(
                         k=ctx // 1000, p=(ctx - limit) // 1000, f=limit // 1000, notes=notes,
                         h=REPEAT_HARD.format(h=hard // 1000) if hard else ""))
                     state["stop_ctx"] = ctx
@@ -637,7 +673,7 @@ def decide(state: dict, ctx, is_sub: bool, th, wait_s, now: float, cfg: dict, bg
         jobs = state.get("bg_jobs") or []
         if bg_job not in jobs:
             if now - state.get("bg_ts", 0) >= cfg["bg_reminder_cooldown_s"]:
-                out.append(BG)
+                out.append(T_BG)
                 state["bg_ts"] = now
             state["bg_jobs"] = (jobs + [bg_job])[-BG_JOBS_KEPT:]
     return out
@@ -707,7 +743,8 @@ def run(inp: dict, a: SimpleNamespace, cfg: dict, now=None) -> str:
         seen = seen if isinstance(seen, list) else []
         if tuid and (tuid in seen or state.get("last_tuid") == tuid):
             return ""                         # a second registration ran for this call: already done
-        notes = decide(state, ctx, is_sub, th, wait_s, now, cfg, bg_job)
+        notes = decide(state, ctx, is_sub, th, wait_s, now, cfg, bg_job,
+                       report=is_sub and is_report(cfg, inp.get("agent_type")))
         if not is_sub:
             notes += lane_alerts(inp, state, state_dir, key, cfg, now)
         # recorded on every call: what the PreToolUse hard stop and the coordinator's lane alerts read

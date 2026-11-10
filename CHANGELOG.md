@@ -84,3 +84,48 @@
   instructions are read from a file at each compaction).
 - All of this has run under the tests (92 for the hooks, 54 for the plugin) and from the command
   line, not yet in a long live session.
+
+## 2026-11-10: report lanes, restart commands, one orientation script, self-compact 0.6.1
+
+Six fixes from one coordinator's notes after two compactions and a planning round, and one trial.
+
+- New rules R-loop-15 to R-loop-18. A recurring background job is started by a script that
+  prints its own restart command as its last line, and the carry lists that command
+  (`tools/sweep_timer.sh`): after one compaction neither the summary nor the carry held the
+  timer's command. Orientation after a compaction is one script that also checks the caps of
+  the capped files (`tools/orient.sh`). An agent whose deliverable is a report writes its report
+  file first (limit 200k, wrap-up from 170k): in one planning round 2 of 5 consultants reached
+  the 150k limit before their report was finished. A late notice for a lane that is already
+  closed is checked by its activity since the closing time, not by reading its output.
+- R-route-8, a trial that is not yet measured: a reader builds a source index (path, line range,
+  verbatim quote, why) before a consultant starts; the consultant opens the ranges itself and
+  lists what the index missed. Stop if those lists are not short.
+- R-loop-6: where the summary and the carry disagree, the carry wins.
+- `hooks/context_guard.py` (plugin `playbook-hooks` 0.2.0): `"deliverable": "report"` in an
+  `agent_types` entry gives that type report wording. Its notices ask it to write and finish
+  its report file, not to update a HANDOFF block, commit or push. Types without the key get the
+  same texts as before. `context_guard_ctl.py show` marks such types; the example config has a
+  `consultant` type.
+- `tools/agent_scan.py`: `--agent <id or prefix>` prints one sub-agent in detail (state, context,
+  first and last activity, tool calls, its last text); `--since HH:MM|ISO|90m|2h` adds its
+  activity since then and names the date and time it used; both work with `--json`. A transcript
+  timestamp without an offset is read as UTC.
+- `plugins/self-compact/` 0.6.1: when a queued message starts the turn after a compaction
+  first, the resume prompt is held back. It is dropped if the main agent made 10 or more tool
+  calls by the end of that turn, and sent then if it made fewer
+  (`resumeSkipAfterToolCalls`, default 10; 0 = send at once, as in 0.6.0). The default is above
+  what orienting after a compaction takes (7 or 8 calls with the starter kit's checklist),
+  because a wrong drop leaves an unattended agent idle and a wrong send costs one turn. If
+  that turn's end is never reported, the next main turn's end decides, or the plugin does
+  when it finds no tool call of the main agent in a 10-minute window (so 10 to 20 minutes
+  after the last one). A new request, `cancel_compaction` or the session ending drops a held prompt, and a
+  dropped prompt no longer swallows a later prompt with the same text. The carry block says
+  that it wins over the summary.
+- `plugins/self-compact/` 0.6.1, fixed: a sub-agent's turn that started while a request waited
+  was taken for a turn of the main agent. The compaction then waited until the main agent's
+  next turn ended (seen in the plugin's log). Only the main agent's turns count now.
+- STARTER-KIT.md: lane ledger and duties log files, a "Restart commands" line in the carry
+  template, a source-index brief template (3.5), a consultant agent definition.
+- Tests: 100 for the hooks, 31 for the tools, 74 for the plugin. None of this has yet run in a
+  long live session; the order of queued messages after a compaction, and whether 1.5 s is
+  enough for one to start its turn, cannot be tested outside one.

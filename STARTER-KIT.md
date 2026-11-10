@@ -77,7 +77,7 @@ Regenerate every ~50 new hints lines or when a decision supersedes a line here.
 ## Releases and gates
 ## Current state (one line, date)
 ```
-Budget: hard cap 15 KB and 400 bytes per line, rules in force only. The hints file keeps the full
+Budget: hard cap 15,000 bytes and 400 bytes per line, rules in force only. The hints file keeps the full
 history; this file is what gets read.
 
 ### 2.2 Standing duties registry (section inside the hints file)
@@ -142,6 +142,8 @@ AGENT <id> = <name> | branch <b> | worktree <path> | notes <path> | relaunch: <c
 - `notes/dropped-levers.md`: `| # | date | idea | owner/commit | target | expected | measured | why dropped | revive if |`
 - `usage/orch.md` (hourly): `| time | quota 5h/7d | burn %/h | $ last 60 min | live agents | slots per host | alerts | action |`
 - Ledger (`ops/trains.jsonl`), one JSON line per merge batch: `{"ts": local time, "batch": id, "commits": [...], "evidence": [job ids], "verdict": ..., "pushed": sha}`.
+- Lane ledger (`ops/lanes.md`), one row per lane, written at launch and at close with times from `date`: `| lane | agent id | state | opened | closed | notes |`, state `live` or `closed`. `tools/orient.sh` prints the `live` rows; a late notice for a `closed` row is checked with `tools/agent_scan.py --agent <id> --since <closed>` (R-loop-18).
+- Duties log (`ops/duties.log`): the duty checker's output, one line per run; `tools/orient.sh` prints its tail.
 
 ### 2.6 Rules block (`notes/agent-rules.md`, pasted or referenced as FIRST ACTION)
 
@@ -242,12 +244,23 @@ Next step: <exact action>
 Waiting on: <lane name> -> <expected event>, ...
 Queued/running jobs: <id> owner <name> <what>
 Background shells: <task id and purpose>
+Restart commands: <purpose>: <exact command, e.g. the RE-ARM line of tools/sweep_timer.sh>
 Open user questions: <...>
 Open first (max 3 files): <rules digest>, <...>
 
 RESUME PROMPT:
-Read <rules digest> and the hints lines newer than its header, confirm the line number, then continue with: <next step>.
+Read <rules digest>, run tools/orient.sh, confirm the hints line number, then continue with: <next step>.
 ```
+
+Where the summary and the carry disagree, the carry wins: you wrote the carry just before the
+compaction. Live background shells are shown again after a compaction; finished ones are not, so
+a job that has to be started again needs its command in the carry (R-loop-15).
+
+From self-compact 0.6.1, when another message starts the next turn first, the plugin holds the
+resume prompt back. It sends it after that turn only if the turn made fewer than 10 tool calls
+(`resumeSkipAfterToolCalls`; 0 = always send). Keep that number above the calls your orientation
+takes (section 5.1: 7 or 8), or a turn that only oriented drops the prompt. Act on the carry's next step
+at once either way.
 
 The compaction instructions themselves are a fixed text kept in a project file: this cycle only,
 at most 700 words (what the user asked, what was answered or promised, decisions and results with
@@ -258,19 +271,42 @@ and `resume`.
 
 Never call cancel on a compaction you did not request yourself in this context.
 
+### 3.5 Source index (trial, R-route-8)
+
+The coordinator starts the reader before the consultant, never the consultant itself.
+
+```text
+You are <name> (<reader | worker>), a READER for one consultant question. You judge relevance, not the answer.
+QUESTION (for context only): <the consultant's question>
+SOURCES: <path>, <path>, ...
+WRITE <index path>, one entry per relevant passage:
+  <path>:<from>-<to> | "<verbatim quote>" | <one line: why it matters>
+Then a COVERAGE list with every source above: <path>: read in full | searched (<terms>) | not opened.
+Never summarize a passage in place of quoting it. Report to main: the index path and "Flags: ...".
+```
+
+The consultant's brief then adds: "Read <index path>. Open its ranges yourself; read the key
+sources in full when the decision depends on completeness. End your report with 'Found outside
+the index': each relevant passage the index missed, as path:lines." Measure per round: consultants
+that finished under the standard limit with a complete report, and the length of those lists.
+
 ## 4. Daemons and timers
 
 | daemon | start | verify |
 |---|---|---|
 | alert daemon (loop 2 min) | `nohup <monitor> run >> <out>/monitor/run.log 2>&1 &` (one instance, flock) | `<monitor> status` shows a fresh loop time; alerts file mtime < 5 min |
 | wait-alert watcher | coordinator background task: `<monitor> wait-alert --ignore "$(cat ops/ignore.txt)"` | exits on a test alert; relaunch after each wake |
-| sweep timer | background task: `sleep 1800; run duties + agent scan + ctx-eff + bottlenecks + token mix` | notification arrives every 30 min with OVERDUE list |
+| sweep timer | background task: `tools/sweep_timer.sh 30 <sweep script>` (the sweep script runs duties + agent scan + ctx-eff + bottlenecks + token mix) | notification arrives every 30 min with OVERDUE list; its last line `RE-ARM: <command>` starts the next round |
 | quota logger | every 10 min to quota JSONL | duty flags staleness > 30 min |
 | pace daemon + watcher | every 15 min; wake at +3/-4 pp, 90/100 %, hourly | pace file fresh; disagree flag vs dashboard |
 | dashboard | stdlib HTTP server re-reading state every 30 s | page loads; data timestamps current |
 | backfill feeder (optional) | preemptible filler jobs (lowest priority, never ages) | capped while merge jobs queue |
 | laptop guard | memory/swap/disk poller, kills only own runaway work processes | log line every interval |
 | host cleaners | owner-aware pruning of build caches of finished agents | log; never touches dirs named by queued jobs |
+
+Every recurring background job is started by a script kept in the repository, and the script
+prints the command that starts it again as its last line (R-loop-15). Put that command into the
+carry block before a compaction.
 
 Rules: restart a daemon after any change it reads; after an infra deploy run `queue status` and a
 dry run of every subcommand before restarting daemons; never restart a daemon while one of its jobs
@@ -280,8 +316,8 @@ runs unless you accept losing it; renice laptop daemons to lowest priority.
 
 ### 5.1 After every compaction (coordinator)
 
-1. Read the rules digest + newer hints lines; write the "rules digest read (hints through line N)" line in the first reply.
-2. Read the STATE line and the last SWEEP/STALE lines of the resume sheet.
+1. Read the rules digest, then run `tools/orient.sh` (newer hints lines, resume sheet head, live lanes, duties log tail, caps); write the "rules digest read (hints through line N)" line in the first reply. Fix any `OVER` line.
+2. Read the last SWEEP/STALE lines of the resume sheet if the orientation output did not show them.
 3. `date` (never extrapolate times from notes).
 4. Queue status: live and queued jobs vs the carry block.
 5. Agent scan: live agents vs the carry block; anyone HUNG, idle, finished without a report?
@@ -362,6 +398,29 @@ tools: Read, Grep, Glob, Bash
 Locate code, list signatures and call sites. Never judge correctness of subtle code.
 ```
 
+A consultant, advisor or reviewer whose deliverable is a report (R-loop-17):
+
+```markdown
+---
+name: consultant
+description: Read-only consultant: answers one question for the coordinator with a written report. Writes no code, makes no commits.
+model: opus
+effort: high
+tools: Read, Grep, Glob, Bash, Write, Edit
+---
+Right after orientation, create your report file (path in your brief) with an outline: question, answer so far, evidence, open points, sources read. Fill it as you go, so a stop at any point leaves a usable report.
+Read line ranges, not whole files; if your brief gives a source index, open its ranges and list relevant passages it missed under "Found outside the index".
+When the context guard says so, finish the report file and end. Final message: the report path and "Flags: ...".
+```
+
+Set `model` to the strongest model your account serves; `opus` above stands for it.
+Mark its type as a report type in the context guard's config, so that its notices ask for the
+report file and not for a HANDOFF block and a commit:
+
+```json
+"agent_types": {"consultant": {"limit": 200000, "wrapup_margin": 30000, "deliverable": "report"}}
+```
+
 Check the exact model ids your account serves: an alias may map to an older model
 generation. Byte budget: ~10 kB for the engineer definition.
 
@@ -412,3 +471,13 @@ python3 ~/.claude/playbooks/multi-agent/tools/agent_scan.py --config .claude/hoo
 ```
 
 It reads timestamps, token counts and tool names from the transcripts, nothing else.
+
+[tools/orient.sh](tools/orient.sh) is the one orientation command after a compaction (R-loop-16):
+the hints lines newer than the digest header, the head of the resume sheet, the live rows of the
+lane ledger, the tail of the duties log, and the rules digest against its cap (`OK` or `OVER`).
+The file names are set at its top and can be overridden from the environment. For every other
+file with a cap, add one `cap_line` call at the end of the script.
+
+[tools/sweep_timer.sh](tools/sweep_timer.sh) `<minutes> <command> [args...]` waits, runs the
+command and ends with `RE-ARM: <command line>` (R-loop-15). Start it in the background; the
+completion notice then carries the command for the next round.

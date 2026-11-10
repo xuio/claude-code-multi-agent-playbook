@@ -35,8 +35,8 @@ written note, and never wake a big agent for work a fresh one can do.
 
 | file | what it is |
 |---|---|
-| [RULES.md](RULES.md) | Every rule in one line (about 25 KB). This is the file a coordinator agent loads. |
-| [PLAYBOOK.md](PLAYBOOK.md) | All 139 rules with their reason, evidence and check, plus a catalogue of failure modes. |
+| [RULES.md](RULES.md) | Every rule in one line (about 27 KB). This is the file a coordinator agent loads. |
+| [PLAYBOOK.md](PLAYBOOK.md) | All 144 rules with their reason, evidence and check, plus a catalogue of failure modes. |
 | [STARTER-KIT.md](STARTER-KIT.md) | Day-1 setup for a new project: file templates, the rules block for briefs, brief and handoff templates, checklists. |
 | [examples/agents/](examples/agents) | Agent definition files: engineer, worker, reader, an `Explore` override and a lean batch worker for fan-outs. |
 | [examples/skills/token-saver/](examples/skills/token-saver) | A minimal skill with the reading habits that keep contexts small. The example agent files preload it. |
@@ -44,6 +44,8 @@ written note, and never wake a big agent for work a fresh one can do.
 | [hooks/](hooks/README.md) | Claude Code hooks that enforce the rules agents forget: a context guard (tells each agent how full its context is, stops a lane that runs far past its limit, tells the coordinator which lanes are over, denies waits that outlive the prompt cache), a command that changes context limits while agents run, a Bash guard (no `cd`, no heavy local builds), a reminder after every compaction and a compaction log. Copy them into a project, or install them once as the plugin `playbook-hooks`. |
 | [plugins/self-compact/](plugins/self-compact/README.md) | A plugin that lets the coordinator compact its own context at a point it chooses, carry text verbatim across the compaction and resume. |
 | [tools/agent_scan.py](tools/agent_scan.py) | One line per agent of a running session: context against its limit, idle time, polling, hung tool calls, cache rewrites. |
+| [tools/orient.sh](tools/orient.sh) | The one orientation command after a compaction: hints lines newer than the rules digest, the resume sheet head, live lanes, the duties log tail, and the rules digest against its cap (one line to add per further capped file). |
+| [tools/sweep_timer.sh](tools/sweep_timer.sh) | A background timer that runs one command and ends with the command that starts it again, so a compaction cannot lose it. |
 | [tools/make_rules_digest.py](tools/make_rules_digest.py) | Regenerates RULES.md from PLAYBOOK.md. |
 
 ## Quick start

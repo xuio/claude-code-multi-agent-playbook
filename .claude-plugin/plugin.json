@@ -1,6 +1,6 @@
 {
   "name": "playbook-hooks",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "The hooks of the multi-agent playbook: context guard (context notices per agent, a stop that holds, the 270 s wait cap), Bash guard, reminder after a compaction, compaction log. Active only in projects that opt in with a config file.",
   "author": {
     "name": "Moritz Hoffmann",

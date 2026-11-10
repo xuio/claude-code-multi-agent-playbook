@@ -848,5 +848,95 @@ class TestConfigLookup(Base):
                          os.path.join(os.path.dirname(self.cfg_path), "ov", "o.json"))
 
 
+class TestReportDeliverable(Base):
+    """An agent type with "deliverable": "report" gets report wording in every notice that would ask a
+    code lane for its HANDOFF block, a commit or a push."""
+
+    def rcfg(self, value="report", **kw):
+        return self.cfg(agent_types={"engineer": {"deliverable": value}}, **kw)
+
+    def post(self, c, ctx=None, now=NOW, **kw):
+        if ctx is not None:
+            self.set_ctx(self.sub_tp, ctx)
+        return self.sub_run(c, now, **kw)
+
+    def pre(self, c):
+        d = {"hook_event_name": "PreToolUse", "session_id": "sess", "transcript_path": self.main_tp,
+             "tool_name": "Read", "tool_input": {}, "tool_use_id": "toolu_pre",
+             "agent_id": AID, "agent_type": "engineer"}
+        out, _ = cg.hard_stop_pre(d, self.args(), c, NOW)
+        return json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"] if out else ""
+
+    def assertReport(self, out, *needles):
+        self.assertTrue(out)
+        for word in ("HANDOFF", "commit", "push", "notes file"):
+            self.assertNotIn(word, out)
+        for n in needles:
+            self.assertIn(n, out)
+
+    def test_is_report(self):
+        self.assertTrue(cg.is_report(self.rcfg(), "engineer"))
+        self.assertFalse(cg.is_report(self.rcfg(), "other"))
+        self.assertFalse(cg.is_report(self.rcfg("code"), "engineer"))
+        self.assertFalse(cg.is_report(self.cfg(), "engineer"))
+
+    def test_note_wrapup_limit_repeat(self):
+        c = self.cfg(agent_types={"engineer": {"deliverable": "report", "limit": 150_000}}, hard_stop_margin=0)
+        with open(os.path.dirname(self.cfg_path) + "/context_guard.overrides.json", "w") as f:
+            json.dump({"agents": {AID: {"limit": 150_000, "note": 100_000}}}, f)
+        self.assertReport(self.post(c, 101_000), "context 101k: write what you have found so far into your "
+                          "report file now, then continue (limit 150k)")
+        self.assertReport(self.post(c, 131_000), "19k left before your 150k limit", "Open no new sources",
+                          "list in it what you did not read")
+        self.assertReport(self.post(c, 150_000), "past your 150k limit: stop now. Finish your report file "
+                          "(findings, what you left unread, open questions) and end your turn")
+        self.assertReport(self.post(c, 160_000), "160k is 10k past your 150k limit", "Finish your report file")
+
+    def test_hard_stop_paths(self):
+        c = self.rcfg(hard_stop_grace_calls=1)
+        self.assertReport(self.post(c, 171_000), "You have 1 more tool calls to finish your report file")
+        self.assertReport(self.post(c), "hard stop: 0 tool calls left to finish your report file")
+        reason = self.pre(c)
+        self.assertReport(reason, "your tool calls are refused", "what is missing from your report file",
+                          "raising your limit")
+
+    def test_hard_stop_repeat_names_the_hard_stop(self):
+        c = self.rcfg(hard_stop_margin=50_000)
+        self.post(c, 150_000)
+        self.assertReport(self.post(c, 160_000), "Finish your report file", "From 200k your tool calls")
+
+    def test_background_reminder(self):
+        out = cg.decide({}, None, True, (None, 130_000, 150_000), None, NOW, self.rcfg(), "job1", report=True)
+        self.assertReport(out[0], "a background job is running", "report file")
+
+    def test_override_keeps_report_wording(self):
+        c = self.rcfg()
+        ov = os.path.join(os.path.dirname(self.cfg_path), "context_guard.overrides.json")
+        with open(ov, "w") as f:
+            json.dump({"types": {"engineer": {"limit": 120_000}}}, f)
+        self.assertReport(self.post(c, 121_000), "past your 120k limit", "Finish your report file")
+
+    def test_without_key_or_unknown_value_texts_unchanged(self):
+        for c in (self.cfg(hard_stop_margin=0), self.rcfg("code", hard_stop_margin=0)):
+            shutil.rmtree(self.state, ignore_errors=True)
+            self.assertEqual(self.post(c, 131_000), "[context-guard] " + cg.WRAPUP.format(
+                k=131, m=19, f=150, notes="your notes file"))
+            self.assertEqual(self.post(c, 150_000), "[context-guard] " + cg.LIMIT.format(
+                k=150, f=150, notes="your notes file"))
+            self.assertIn("HANDOFF", self.post(c, 160_000))
+        out = cg.decide({}, None, True, (None, 130_000, 150_000), None, NOW, self.cfg(), "job1")
+        self.assertEqual(out, [cg.BG])
+
+    def test_ctl_show_names_report_types(self):
+        self.cfg(agent_types={"engineer": {"deliverable": "report", "limit": 200_000}, "worker": {"limit": 80_000}})
+        r = subprocess.run([sys.executable, TestControl.CTL, "--config", self.cfg_path, "show"],
+                           capture_output=True, text=True, timeout=10)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        line = [ln for ln in r.stdout.splitlines() if "type engineer" in ln][0]
+        self.assertIn("limit 200k, wrap-up from 180k, deliverable report", line)
+        line = [ln for ln in r.stdout.splitlines() if "type worker" in ln][0]
+        self.assertNotIn("deliverable", line)
+
+
 if __name__ == "__main__":
     unittest.main()
