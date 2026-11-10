@@ -14,16 +14,20 @@ A lane in an auto-cleaned worktree commits its notes on its branch instead (R-ho
 2. Create the agent definitions (section 6) and restart the session so they load (R-route-6).
 3. Create the files in section 2 (hints, duties registry, findings, resume sheet, rules block,
    quality log, dropped-levers list, orchestration log).
-4. Install the hooks: context guard (notices at the wrap-up point and at the limit, foreground
-   wait cap 270 s) and Bash guard
-   (no `cd`, no heavy local builds). Verify with one blocked test command each.
+4. Install the hooks from [hooks/](hooks/README.md): context guard (notices at the wrap-up point
+   and at the limit, foreground wait cap 270 s), Bash guard (no `cd`, no heavy local builds) and
+   the reminder after a compaction. Verify with one blocked test command each. If the coordinator
+   is to compact itself (R-loop-6), install the `self-compact` plugin
+   ([plugins/self-compact/](plugins/self-compact/README.md)).
 5. With several build hosts, set up the job queue before the first wave (with one machine, skip
    it and use `bgrun.sh` / `bgwait.sh` from section 7): one queue for all hosts, detached runs, `wait <id>
    --timeout`, `adopt`, `cancel`, priorities with aging, slots, a dirty-tree check at start.
 6. Start the daemons (section 4) and verify each.
 7. Write the brief template and the successor template (section 3); lint them.
-8. Launch the first wave small (3-5 agents). Run the agent scan at ~5 min and look at agents
-   above 70 % of their limit while still in setup: fix the brief or raise the limit (R-ctx-3).
+8. Launch the first wave small (3-5 agents). Run the agent scan (`tools/agent_scan.py`) at
+   ~5 min and look at agents above 70 % of their limit while still in setup: fix the brief or
+   raise the limit (R-ctx-3) with `context_guard_ctl.py set --agent <id> --limit <N> --for 2h
+   --reason "<why>"`.
 9. Start the 30-min sweep timer. First sweep within 30 min of the first launch.
 
 ## 2. Files to create
@@ -67,6 +71,7 @@ Regenerate every ~50 new hints lines or when a decision supersedes a line here.
 - <rule> (H<line>)
 ## Compute and hosts
 ## Agents and briefs
+- Lane context limit <N>k. Change it for running agents: `python3 .claude/hooks/context_guard_ctl.py set --agent <id> | --type <t> | --default --limit <N> --for 2h --reason "<why>"`; `show` lists what is in force. (H<line>)
 ## Releases and gates
 ## Current state (one line, date)
 ```
@@ -246,6 +251,9 @@ The compaction instructions themselves are a fixed text kept in a project file: 
 at most 700 words (what the user asked, what was answered or promised, decisions and results with
 file paths, what was in progress); no rules, earlier history or file contents.
 
+With the `self-compact` plugin these are the three fields of its tool: `instructions`, `carry`
+and `resume`.
+
 Never call cancel on a compaction you did not request yourself in this context.
 
 ## 4. Daemons and timers
@@ -386,3 +394,17 @@ against the documentation of your version.
   `BGRUN DONE rc=<n>` when it ends. Start it through the harness's run-in-background.
 - `bgwait.sh <log> [seconds]` waits up to `seconds` (default 240, never above 270) for that line
   and prints the log tail. An agent polls with it in the foreground and keeps its cache warm.
+
+[hooks/](hooks/README.md) holds the context guard, the command that changes its limits while
+agents run, the Bash guard and the reminder after a compaction (step 4 of section 1).
+
+[tools/agent_scan.py](tools/agent_scan.py) prints one line per agent of the running session:
+state, context against its limit, idle time, calls in the last hour, cache rewrites, and the
+flags CTX, OVER, SILENT, HUNG, POLLING, NOMSG and REWRITES (R-loop-5). Run it from the project
+folder at every sweep:
+
+```bash
+python3 ~/.claude/playbooks/multi-agent/tools/agent_scan.py --config .claude/hooks/context_guard.json
+```
+
+It reads timestamps, token counts and tool names from the transcripts, nothing else.

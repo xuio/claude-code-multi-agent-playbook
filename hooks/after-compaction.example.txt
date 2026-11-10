@@ -1,0 +1,6 @@
+[after-compaction reminder] Your context was just compacted. The summary keeps state, not rules. Before you act on anything:
+1. Read the rules digest (ops/rules-digest.md) in one Read, then the hints lines after its "covers through line N" header.
+2. Run `date`, then one orientation command: the STATE line of the resume sheet, live agents, running and queued jobs, the tail of the duties log.
+3. Check that the alert watcher and the sweep timer still run; start them again if not.
+4. Start your first reply with: rules digest read (hints through line N), newest entry: <id and gist>.
+Only then handle agent messages. Never rebuild a rule from memory: grep the hints file for it.

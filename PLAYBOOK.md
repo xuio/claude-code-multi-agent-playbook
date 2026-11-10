@@ -45,7 +45,8 @@ Words used throughout:
 - **Merge train, merge steward**: finished lanes are merged in batches (trains) by one agent (the
   steward), which runs the full checks once per batch (R-ev-8, R-ev-9).
 - **Self-compaction**: the coordinator compacting its own context at a point it chooses, through
-  the harness's compact command or a plugin that exposes it as a tool.
+  the harness's compact command or a plugin that exposes it as a tool (one is in
+  `plugins/self-compact/`).
 - **Token-saver skill**: a short skill with the reading habits of R-ctx-8; a minimal version is
   in `examples/skills/token-saver/`.
 
@@ -198,6 +199,9 @@ coordinator.** Size work in phases that end in a deliverable.
 
 - The coordinator may raise or lower a limit: for one lane (in the brief), for a limited time (a
   wave or phase, with the end condition written down), or for the whole project (rules file).
+  For agents that are already running it uses `hooks/context_guard_ctl.py` (one agent, one agent
+  type or all lanes, with an expiry): the context guard reads the change at the agent's next tool
+  call and tells the agent.
   Raise it when two or more lanes of a wave stop before their first deliverable, when a successor
   needs more than 20 orientation calls, when a defect traces to a handoff, or when a live lane is
   above 70 % of its limit while still in setup. Lower it when the project's tasks are small.
@@ -211,9 +215,10 @@ coordinator.** Size work in phases that end in a deliverable.
   or regressing work `[M]` (correlation, n = 3). Ask the user before going there.
 - An agent that starts at ~63k (general-purpose) has ~50k less room under the same limit: give it
   a lean agent file (R-ctx-11) or count that in.
-- Check: a context-guard hook posts notices at the wrap-up point and at the limit; per-agent
-  overrides live in one JSON file; every change of a limit is recorded with reason, scope and end
-  condition; the sweep looks at lanes above 70 % of their limit ~5 min after a wave launch.
+- Check: a context-guard hook (`hooks/context_guard.py`) posts notices at the wrap-up point and
+  at the limit; overrides per agent, per agent type and for all lanes live in one JSON file,
+  written by `hooks/context_guard_ctl.py`; every change of a limit is recorded with reason, scope
+  and end condition (the command appends it to a changes file); the sweep looks at lanes above 70 % of their limit ~5 min after a wave launch.
 
 **R-ctx-4. Hand off only if real work remains (~50+ calls); finish short tails in place.**
 - Why: a handoff costs ~5-20 orientation calls plus the note; successors oriented in 5-20 calls at
@@ -309,7 +314,7 @@ a fresh successor collects the result.**
   park `[U]`.
 - Why the rule must be written with its reason: after a compaction the coordinator "simplified"
   it to a 590 s blocking wait, which is the expensive case `[I]`.
-- Check: a PreToolUse hook denies sub-agent foreground Bash timeouts > 270 s `[M]` (after it: 9
+- Check: a PreToolUse hook (`hooks/context_guard.py`) denies sub-agent foreground Bash timeouts > 270 s `[M]` (after it: 9
   long waits denied, soft-limit notices 37 -> 3 in a few hours). A duty check fails if the rules
   block loses the "TTL is 5 min" line.
 
@@ -595,6 +600,9 @@ without result > 20 min).
   in a git commit). A sub-agent self-compacted and then stopped, its jobs unattended ~25 min `[I]`.
 - Check: HUNG -> move the work to a successor from the notes at once; wrap `git commit` in a
   120 s timeout in briefs.
+- Tool: `tools/agent_scan.py` prints one line per agent with these flags (CTX there means at or
+  past the wrap-up point), plus OVER (context past the limit) and REWRITES (three or more cache
+  misses). With `--config` it uses the context guard's limits, run-time changes included.
 
 **R-loop-6. Self-compaction of the coordinator.** Compact at natural points (after a merge push,
 after a lane report is fully processed) from ~190k context `[U][M]` (it had been 230-300k; the
@@ -616,6 +624,9 @@ to a successor coordinator; it continues through compactions `[U]`.
 - If a full read is ever needed, split by bytes (`split -b 80000`) and read each piece; fixed page
   boundaries go stale as the file grows `[I]`.
 - Check: the duties registry has a row for it; hints protocol at the top of the hints file.
+- Tools: the `self-compact` plugin (`plugins/self-compact/`) gives the coordinator the compaction
+  as a tool call with `instructions`, `carry` and `resume`; a `SessionStart` hook with the matcher
+  `compact` (`hooks/after-compaction.example.txt`) prints the reminder to read the digest.
 
 **R-loop-7. Never type a clock time by hand.** Every time comes from `date` in the same command
 that writes it.
@@ -718,9 +729,10 @@ STATE/NEXT section with live job ids; the coordinator keeps the resume sheet; mu
 |---|---|---|---|
 | alert daemon | hosts, slots held vs used, queues, timeouts, disk, memory, agent transcripts (wakes, context, stuck), usage windows | loop every 2 min | alerts JSONL + digest |
 | wait-alert watcher | blocks until a new alert not in the ignore list | coordinator background task | exits -> harness wakes the coordinator |
-| context guard hook | context notices at soft/firm; denies foreground waits > 270 s; reminds about bg jobs | every tool call (Pre/PostToolUse) | notice in the agent's context; JSONL log |
+| context guard hook (`hooks/context_guard.py`) | context notices at soft/firm; denies foreground waits > 270 s; reminds about bg jobs | every tool call (Pre/PostToolUse) | notice in the agent's context; JSONL log |
+| Bash guard hook (`hooks/bash_guard.py`) | rejects `cd`/`pushd` and the commands listed in its config | every Bash call (PreToolUse) | reason in the agent's context |
 | duty checker | OK/OVERDUE per duty from evidence files | sweep timer | stdout in the sweep notification |
-| agent scan | SILENT/NOMSG/POLLING/CTX/HUNG per agent | sweep | stdout |
+| agent scan (`tools/agent_scan.py`) | SILENT/NOMSG/POLLING/CTX/OVER/HUNG/REWRITES per agent | sweep | stdout |
 | context-efficiency | per agent: ctx at first report, 30-min ramp, avg ctx/call, handoff size | sweep | JSONL trend + flags |
 | token mix | spend by token type and role | sweep | stdout (MIX part) |
 | efficiency analysis | per agent / window: cost, wakes (gaps > 300 s), polls vs work, goal share | on demand | stdout |
@@ -1041,6 +1053,8 @@ anything.
 sub-agents share the coordinator's session id, sub-agents must never call it.
 - Why: a sub-agent's compaction request compacted the coordinator instead, and the coordinator's
   cancel dropped a sub-agent's request `[I]`.
+- Check: the `self-compact` plugin in this repository refuses calls from sub-agents since 0.4.0.
+  The rule stays in briefs for older versions and for other plugins.
 
 **R-safe-7. Secrets** never in briefs, notes, commits or URLs.
 
@@ -1048,7 +1062,7 @@ sub-agents share the coordinator's session id, sub-agents must never call it.
 before every commit.
 - Why: a coordinator `cd` moved a later sub-agent's start dir `[I]`; a removed-and-recreated
   worktree let a commit land on the main checkout `[I]`.
-- Check: a PreToolUse Bash guard hook rejects `cd`/`pushd` and heavy local builds (quote-aware,
+- Check: a PreToolUse Bash guard hook (`hooks/bash_guard.py`) rejects `cd`/`pushd` and heavy local builds (quote-aware,
   fails open on parse errors).
 
 **R-safe-9. Agents do not create task suggestions in the user's interface.** Follow-ups go into reports; the coordinator launches agents

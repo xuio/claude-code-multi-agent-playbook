@@ -1,0 +1,26 @@
+{
+  "lane_limit": 120000,
+  "wrapup_margin": 30000,
+  "coordinator_compact_at": 190000,
+  "agent_types": {
+    "batch-worker": {
+      "limit": 80000
+    },
+    "reader": {
+      "limit": 100000
+    },
+    "Explore": {
+      "limit": 100000
+    }
+  },
+  "skip_agent_types": [],
+  "overrides_file": "context_guard.overrides.json",
+  "wait_cap_ms": 270000,
+  "wait_cap_applies_to_coordinator": false,
+  "slow_call_s": 300,
+  "slow_call_cooldown_s": 3600,
+  "bg_reminder_cooldown_s": 1800,
+  "notes_hint": "your notes file (notes/<your agent name>.md)",
+  "state_dir": "~/.cache/context-guard",
+  "log": "~/.cache/context-guard/notices.jsonl"
+}

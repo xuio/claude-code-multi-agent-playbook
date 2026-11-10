@@ -41,6 +41,9 @@ written note, and never wake a big agent for work a fresh one can do.
 | [examples/agents/](examples/agents) | Agent definition files: engineer, worker, reader, an `Explore` override and a lean batch worker for fan-outs. |
 | [examples/skills/token-saver/](examples/skills/token-saver) | A minimal skill with the reading habits that keep contexts small. The example agent files preload it. |
 | [examples/scripts/](examples/scripts) | `bgrun.sh` and `bgwait.sh`: run a long command in the background and poll it without losing the prompt cache. |
+| [hooks/](hooks/README.md) | Claude Code hooks that enforce the rules agents forget: a context guard (tells each agent how full its context is, denies waits that outlive the prompt cache), a command that changes context limits while agents run, a Bash guard (no `cd`, no heavy local builds) and a reminder after every compaction. |
+| [plugins/self-compact/](plugins/self-compact/README.md) | A plugin that lets the coordinator compact its own context at a point it chooses, carry text verbatim across the compaction and resume. |
+| [tools/agent_scan.py](tools/agent_scan.py) | One line per agent of a running session: context against its limit, idle time, polling, hung tool calls, cache rewrites. |
 | [tools/make_rules_digest.py](tools/make_rules_digest.py) | Regenerates RULES.md from PLAYBOOK.md. |
 
 ## Quick start
@@ -62,7 +65,11 @@ written note, and never wake a big agent for work a fresh one can do.
 3. Copy the agent files you need from `examples/agents/` into your project's `.claude/agents/`
    and restart the session. Agent files load at session start only.
 
-4. For a project that will run for days, work through [STARTER-KIT.md](STARTER-KIT.md) once:
+4. Install the hooks ([hooks/README.md](hooks/README.md)). Rules that live only in a prompt are
+   forgotten after a compaction; the hooks keep the two most expensive ones in force (context
+   limits and the 270 s wait cap).
+
+5. For a project that will run for days, work through [STARTER-KIT.md](STARTER-KIT.md) once:
    it sets up the notes, hints and findings files, the hooks and the brief templates.
 
 ## Ten rules to start with
@@ -106,7 +113,8 @@ read `queue run` and `queue wait` as the `bgrun.sh` and `bgwait.sh` helpers in `
 Issues and pull requests are welcome, most of all with measurements that confirm or contradict
 a rule: context sizes, cost per call, handoff counts, time lost to an incident. Say what you
 measured and on how many agents. After editing PLAYBOOK.md, run
-`python3 tools/make_rules_digest.py`.
+`python3 tools/make_rules_digest.py`. Tests: `python3 -m unittest discover -s hooks/tests`,
+`python3 -m unittest discover -s tools/tests`, and `claude plugin test plugins/self-compact`.
 
 ## Licence
 

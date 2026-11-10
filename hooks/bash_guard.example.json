@@ -1,0 +1,14 @@
+{
+  "block_cd": true,
+  "cd_message": "use absolute paths and `git -C <dir>`",
+  "blocked_commands": {
+    "cargo": {
+      "allow_subcommands": ["check", "clippy", "fmt", "metadata", "tree", "--version", "-V"],
+      "message": "Builds and test runs go through the job queue (queue run ...), not this machine."
+    },
+    "xcodebuild": {
+      "allow_subcommands": ["-version", "-list", "-showsdks"],
+      "message": "Builds go through bgrun.sh on the build host."
+    }
+  }
+}

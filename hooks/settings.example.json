@@ -1,0 +1,45 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|.*_Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 5,
+            "command": "f=\"${CLAUDE_PROJECT_DIR}/.claude/hooks/bash_guard.py\"; [ -f \"$f\" ] || exit 0; python3 -I \"$f\""
+          },
+          {
+            "type": "command",
+            "timeout": 5,
+            "command": "python3 -I \"${CLAUDE_PROJECT_DIR}/.claude/hooks/context_guard.py\" 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 5,
+            "command": "python3 -I \"${CLAUDE_PROJECT_DIR}/.claude/hooks/context_guard.py\" 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 5,
+            "command": "cat \"${CLAUDE_PROJECT_DIR}/.claude/hooks/after-compaction.txt\" 2>/dev/null || true"
+          }
+        ]
+      }
+    ]
+  }
+}

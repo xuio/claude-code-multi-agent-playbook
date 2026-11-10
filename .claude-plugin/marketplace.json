@@ -1,0 +1,17 @@
+{
+  "name": "claude-code-multi-agent-playbook",
+  "owner": {
+    "name": "Moritz Hoffmann",
+    "url": "https://github.com/xuio"
+  },
+  "plugins": [
+    {
+      "name": "self-compact",
+      "source": "./plugins/self-compact",
+      "description": "Lets Claude compact its own context (a real /compact: the chat history stays visible), carry text verbatim across it and resume itself"
+    }
+  ],
+  "metadata": {
+    "description": "Plugins that go with the multi-agent playbook for Claude Code"
+  }
+}

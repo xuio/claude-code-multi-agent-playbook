@@ -1,0 +1,24 @@
+{
+  "default": {
+    "limit": 160000,
+    "until": "2030-01-31T18:00:00+00:00",
+    "reason": "wave 3: long refactors that need a lot of context"
+  },
+  "types": {
+    "batch-worker": { "limit": 80000 }
+  },
+  "agents": {
+    "<agent id from the Agent tool result>": {
+      "limit": 200000,
+      "wrapup": 170000,
+      "note": 120000,
+      "label": "name of the lane, for the log",
+      "until": "2030-01-31T18:00:00+00:00"
+    }
+  },
+  "coordinator": {
+    "compact_at": 250000,
+    "until": "2030-01-31T12:30:00+00:00",
+    "reason": "finish the report chain first"
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "name": "self-compact",
+  "version": "0.4.0",
+  "description": "Lets Claude compact its own context (a real /compact: the chat history stays visible), carry text verbatim across it and resume itself",
+  "author": {
+    "name": "Moritz Hoffmann",
+    "url": "https://github.com/xuio"
+  },
+  "userConfig": {
+    "alwaysInstructions": {
+      "type": "string",
+      "title": "Always keep (summary instructions)",
+      "description": "Added to the summarizer's instructions on every self-compaction, and on a typed /compact or an auto-compaction of the main conversation where this plugin's compaction hook runs (see the README).",
+      "default": ""
+    },
+    "alwaysCarry": {
+      "type": "string",
+      "title": "Always carry (verbatim after the summary)",
+      "description": "Placed verbatim after the summary on every self-compaction (and on other compactions where this plugin's compaction hook runs), e.g. 'Re-read docs/HANDOFF.md before continuing.'",
+      "default": ""
+    },
+    "burstLimit": {
+      "type": "number",
+      "title": "Most self-compactions per window",
+      "description": "The request_compaction tool refuses a new request once this many self-compactions ran in the window below, in the same session. 0 = no limit.",
+      "default": 3
+    },
+    "burstWindowMinutes": {
+      "type": "number",
+      "title": "Window for the limit above, in minutes",
+      "description": "The time span the burst limit counts over.",
+      "default": 30
+    },
+    "minContextTokens": {
+      "type": "number",
+      "title": "Smallest context worth compacting, in tokens",
+      "description": "The tool refuses a request while the context holds fewer tokens than this (where the host reports the size). 0 = no check.",
+      "default": 40000
+    },
+    "minIntervalMinutes": {
+      "type": "number",
+      "title": "Minimum minutes between self-compactions",
+      "description": "The tool refuses a new request within this many minutes of the last self-compaction in the same session. 0 = off (the default since 0.4; it was 10 before).",
+      "default": 0
+    }
+  },
+  "homepage": "https://github.com/xuio/claude-code-multi-agent-playbook/tree/main/plugins/self-compact",
+  "repository": "https://github.com/xuio/claude-code-multi-agent-playbook",
+  "license": "MIT-0",
+  "keywords": [
+    "compact",
+    "context",
+    "compaction",
+    "mod"
+  ]
+}
