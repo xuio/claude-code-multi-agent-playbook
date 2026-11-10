@@ -74,7 +74,7 @@ written note, and never wake a big agent for work a fresh one can do.
 
 ## Ten rules to start with
 
-1. **One context limit per lane.** 120k by default, 80k for many short tasks, 160k for long,
+1. **One context limit per lane.** 150k by default, 80k for many short tasks, 160k for long,
    complex work. The coordinator may raise or lower it when it sees the signals. (R-ctx-3)
 2. **Fan-outs use a lean agent file.** It starts at about 8k tokens; a general-purpose agent
    starts at about 63k. (R-ctx-11)
@@ -104,7 +104,7 @@ Each rule in the playbook carries a tag:
 - `[O]` opinion or reasoning, not measured.
 
 The numbers come from particular projects, models and prices. Treat them as starting points and
-measure your own. Limits such as 120k are defaults, and R-ctx-3 says when to change them. The
+measure your own. Limits such as 150k are defaults, and R-ctx-3 says when to change them. The
 compute rules in section 9 assume a shared job queue over several build hosts. With one machine,
 read `queue run` and `queue wait` as the `bgrun.sh` and `bgwait.sh` helpers in `examples/scripts/`.
 

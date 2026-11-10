@@ -78,9 +78,9 @@ class AgentScanTest(unittest.TestCase):
 
     def test_context_flags_follow_the_limits(self):
         s = self.session()
-        s.agent("low", call(5, 80_000, "Bash", "ls") + call(1, 85_000, "Bash", "ls"))
-        s.agent("wrap", call(5, 80_000, "Bash", "ls") + call(1, 95_000, "Bash", "ls"))
-        s.agent("over", call(5, 80_000, "Bash", "ls") + call(1, 125_000, "Bash", "ls"))
+        s.agent("low", call(5, 80_000, "Bash", "ls") + call(1, 125_000, "Bash", "ls"))
+        s.agent("wrap", call(5, 80_000, "Bash", "ls") + call(1, 135_000, "Bash", "ls"))
+        s.agent("over", call(5, 80_000, "Bash", "ls") + call(1, 155_000, "Bash", "ls"))
         s.agent("small", call(5, 70_000, "Bash", "ls") + call(1, 85_000, "Bash", "ls"), kind="batch-worker")
         cfg = agent_scan.load_limits("")
         cfg["agent_types"] = {"batch-worker": {"limit": 80_000}}
@@ -113,7 +113,7 @@ class AgentScanTest(unittest.TestCase):
     def test_zero_means_no_limit_and_a_bad_config_means_defaults(self):
         s = self.session()
         s.agent("free", call(5, 80_000, "Bash", "ls") + call(1, 500_000, "Bash", "ls"), kind="reader")
-        s.agent("tight", call(5, 80_000, "Bash", "ls") + call(1, 95_000, "Bash", "ls"), kind="exact")
+        s.agent("tight", call(5, 80_000, "Bash", "ls") + call(1, 140_000, "Bash", "ls"), kind="exact")
         config = os.path.join(s.dir.name, "context_guard.json")
         with open(config, "w") as f:
             json.dump({"agent_types": {"reader": {"limit": 0}, "exact": {"wrapup_margin": 0}}}, f)
@@ -121,7 +121,7 @@ class AgentScanTest(unittest.TestCase):
             json.dump({"coordinator": {"compact_at": 0}}, f)
         rows = s.rows(cfg=agent_scan.load_limits(config, NOW))
         self.assertEqual(rows["free"]["flags"], [])
-        self.assertEqual(rows["tight"]["flags"], [])              # margin 0: no wrap-up point before 120k
+        self.assertEqual(rows["tight"]["flags"], [])              # margin 0: no wrap-up point before 150k
         self.assertEqual(rows["coordinator"]["flags"], [])
         for bad in ("[1, 2]", "not json", '"text"'):
             with open(config, "w") as f:
@@ -129,7 +129,7 @@ class AgentScanTest(unittest.TestCase):
             with open(os.path.join(s.dir.name, "context_guard.overrides.json"), "w") as f:
                 f.write(bad)
             cfg = agent_scan.load_limits(config, NOW)
-            self.assertEqual((cfg["lane_limit"], cfg["overrides"]["agents"]), (120_000, {}))
+            self.assertEqual((cfg["lane_limit"], cfg["overrides"]["agents"]), (150_000, {}))
 
     def test_silent_hung_and_polling(self):
         s = self.session()

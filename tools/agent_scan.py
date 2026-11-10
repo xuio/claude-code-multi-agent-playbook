@@ -30,7 +30,7 @@ Usage:
   agent_scan.py --session FILE.jsonl  one session transcript
   options: --config .claude/hooks/context_guard.json (the context guard's config: limits per
            agent type, and the overrides file beside it that the coordinator changes at run time;
-           without it 120k per lane, wrap-up 30k earlier, coordinator 190k),
+           without it 150k per lane, wrap-up 20k earlier, coordinator 180k),
            --all (also agents that ended or went stale), --json
 
 Python 3.8+, standard library only.
@@ -61,7 +61,7 @@ def newest_session(pdir):
 def load_limits(path, now=None):
     """The context guard's limits: its base config, and the still-valid entries of the overrides
     file beside it (written by context_guard_ctl.py). Anything unreadable: the defaults."""
-    cfg = {"lane_limit": 120_000, "wrapup_margin": 30_000, "coordinator_compact_at": 190_000, "agent_types": {},
+    cfg = {"lane_limit": 150_000, "wrapup_margin": 20_000, "coordinator_compact_at": 180_000, "agent_types": {},
            "overrides_file": "context_guard.overrides.json"}
     ovs = {"default": None, "types": {}, "agents": {}, "coordinator": None}
     cfg["overrides"] = ovs

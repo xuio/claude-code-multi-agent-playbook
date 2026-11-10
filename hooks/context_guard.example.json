@@ -1,7 +1,7 @@
 {
-  "lane_limit": 120000,
-  "wrapup_margin": 30000,
-  "coordinator_compact_at": 190000,
+  "lane_limit": 150000,
+  "wrapup_margin": 20000,
+  "coordinator_compact_at": 180000,
   "agent_types": {
     "batch-worker": {
       "limit": 80000

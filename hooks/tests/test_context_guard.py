@@ -105,8 +105,8 @@ class TestContextNotices(Base):
     def test_defaults(self):
         c = cg.load_config(os.path.join(self.tmp, "absent.json"))
         self.assertEqual((c["lane_limit"], c["wrapup_margin"], c["coordinator_compact_at"], c["wait_cap_ms"]),
-                         (120_000, 30_000, 190_000, 270_000))
-        self.assertEqual(cg.limits_for(c, "anything"), (None, 90_000, 120_000))
+                         (150_000, 20_000, 180_000, 270_000))
+        self.assertEqual(cg.limits_for(c, "anything"), (None, 130_000, 150_000))
 
     def test_coordinator_fires_once(self):
         c = self.cfg()
@@ -121,34 +121,38 @@ class TestContextNotices(Base):
 
     def test_sub_wrapup_then_limit_then_rearm(self):
         c = self.cfg()
-        self.set_ctx(self.sub_tp, 85_000)
-        self.assertEqual(self.sub_run(c), "")                               # wrap-up point is 90k
-        self.set_ctx(self.sub_tp, 95_000)
+        self.set_ctx(self.sub_tp, 125_000)
+        self.assertEqual(self.sub_run(c), "")                               # wrap-up point is 130k
+        self.set_ctx(self.sub_tp, 135_000)
         out = self.sub_run(c)
-        self.assertIn("context 95k: 25k left before your 120k limit", out)
+        self.assertIn("context 135k: 15k left before your 150k limit", out)
         self.assertIn("start nothing new", out)
         self.assertEqual(self.sub_run(c), "")                               # once
-        self.set_ctx(self.sub_tp, 123_000)
+        self.set_ctx(self.sub_tp, 153_000)
         out = self.sub_run(c)
-        self.assertIn("context 123k is past your 120k limit: stop now", out)
+        self.assertIn("context 153k is past your 150k limit: stop now", out)
         self.assertIn("HANDOFF ready", out)
         self.assertEqual(self.sub_run(c), "")
         self.set_ctx(self.sub_tp, 30_000)                                   # compaction
         self.assertEqual(self.sub_run(c), "")
-        self.set_ctx(self.sub_tp, 91_000)
-        self.assertIn("context 91k: 29k left", self.sub_run(c))
+        self.set_ctx(self.sub_tp, 131_000)
+        self.assertIn("context 131k: 19k left", self.sub_run(c))
 
-    def test_first_call_at_100k_fires_wrapup(self):
-        self.assertIn("context 100k: 20k left before your 120k limit", self.sub_run(self.cfg()))
+    def test_first_call_past_the_wrapup_point_fires_wrapup(self):
+        self.assertEqual(self.sub_run(self.cfg()), "")                      # fixture: 100k, below 130k
+        shutil.rmtree(self.state)                                           # a first call again
+        self.set_ctx(self.sub_tp, 140_000)
+        self.assertIn("context 140k: 10k left before your 150k limit", self.sub_run(self.cfg()))
 
     def test_jump_past_both_fires_limit_only(self):
-        self.set_ctx(self.sub_tp, 150_000)
+        self.set_ctx(self.sub_tp, 170_000)
         out = self.sub_run(self.cfg())
-        self.assertIn("past your 120k limit", out)
+        self.assertIn("past your 150k limit", out)
         self.assertNotIn("left before", out)
 
     def test_sub_and_coordinator_states_are_separate(self):
         c = self.cfg()
+        self.set_ctx(self.sub_tp, 140_000)                                  # past the wrap-up point
         self.assertTrue(cg.run(self.inp(sub=True), self.args(), c, NOW))
         self.assertTrue(cg.run(self.inp(), self.args(), c, NOW))
 
@@ -162,10 +166,10 @@ class TestContextNotices(Base):
     def test_limit_per_agent_type(self):
         c = self.cfg(agent_types={"batch-worker": {"limit": 80_000}, "engineer": {"limit": 160_000},
                                   "tight": {"limit": 50_000, "wrapup_margin": 0}})
-        self.assertEqual(cg.limits_for(c, "batch-worker"), (None, 50_000, 80_000))
+        self.assertEqual(cg.limits_for(c, "batch-worker"), (None, 60_000, 80_000))
         self.assertEqual(cg.limits_for(c, "tight"), (None, 50_000, 50_000))
-        self.assertEqual(cg.limits_for(c, "other"), (None, 90_000, 120_000))
-        self.assertEqual(self.sub_run(c), "")                               # engineer at 100k: wrap-up is 130k
+        self.assertEqual(cg.limits_for(c, "other"), (None, 130_000, 150_000))
+        self.assertEqual(self.sub_run(c), "")                               # engineer at 100k: wrap-up is 140k
         out = self.sub_run(c, agent_type="batch-worker")
         self.assertIn("context 100k is past your 80k limit", out)
 
@@ -177,16 +181,17 @@ class TestContextNotices(Base):
         self.assertEqual(cg.pre_tool_use(d, c), "")
 
     def test_notes_hint_in_notice(self):
+        self.set_ctx(self.sub_tp, 140_000)                                  # past the wrap-up point
         self.assertIn("at the top of notes/<name>.md up to date", self.sub_run(self.cfg(notes_hint="notes/<name>.md")))
 
     def test_bad_config_values_fall_back(self):
-        c = self.cfg(lane_limit="150000", wrapup_margin=-5, wait_cap_ms=True, agent_types=[1], skip_agent_types="x",
+        c = self.cfg(lane_limit="170000", wrapup_margin=-5, wait_cap_ms=True, agent_types=[1], skip_agent_types="x",
                      slow_call_s=None, log=7)
         d = dict(cg.DEFAULTS)
         self.assertEqual({k: c[k] for k in d}, d)
         with open(self.cfg_path, "w") as f:
             f.write("{not json")
-        self.assertEqual(cg.load_config(self.cfg_path)["lane_limit"], 120_000)
+        self.assertEqual(cg.load_config(self.cfg_path)["lane_limit"], 150_000)
 
     def test_slow_call_with_cooldown(self):
         c = self.cfg(coordinator_compact_at=0)
@@ -206,6 +211,7 @@ class TestContextNotices(Base):
     def test_prompt_filter(self):
         a = self.args("--only-if-prompt-contains", PROBE)
         c = self.cfg()
+        self.set_ctx(self.sub_tp, 140_000)                                  # past the wrap-up point
         self.assertEqual(cg.run(self.inp(), a, c, NOW), "")                 # the main brief lacks the token
         self.assertTrue(cg.run(self.inp(sub=True), a, c, NOW))
 
@@ -256,29 +262,32 @@ class TestOverrides(Base):
 
     def test_precedence_agent_type_default_config(self):
         c = self.cfg(agent_types={"engineer": {"limit": 110_000}})
-        ovs = {"default": {"limit": 150_000}, "types": {"engineer": {"limit": 160_000}},
+        ovs = {"default": {"limit": 180_000}, "types": {"engineer": {"limit": 160_000}},
                "agents": {AID: {"limit": 170_000}}, "coordinator": None}
-        self.assertEqual(cg.resolve(c, ovs, AID, "engineer"), (None, 140_000, 170_000, None, "agent"))
-        self.assertEqual(cg.resolve(c, ovs, "other", "engineer"), (None, 130_000, 160_000, None, "type"))
-        self.assertEqual(cg.resolve(c, ovs, "other", "worker"), (None, 120_000, 150_000, None, "default"))
+        self.assertEqual(cg.resolve(c, ovs, AID, "engineer"), (None, 150_000, 170_000, None, "agent"))
+        self.assertEqual(cg.resolve(c, ovs, "other", "engineer"), (None, 140_000, 160_000, None, "type"))
+        self.assertEqual(cg.resolve(c, ovs, "other", "worker"), (None, 160_000, 180_000, None, "default"))
         none = {"default": None, "types": {}, "agents": {}, "coordinator": None}
-        self.assertEqual(cg.resolve(c, none, AID, "engineer"), (None, 80_000, 110_000, None, "config"))
-        self.assertEqual(cg.resolve(c, none, AID, "worker"), (None, 90_000, 120_000, None, "config"))
+        self.assertEqual(cg.resolve(c, none, AID, "engineer"), (None, 90_000, 110_000, None, "config"))
+        self.assertEqual(cg.resolve(c, none, AID, "worker"), (None, 130_000, 150_000, None, "config"))
 
     def test_default_override_for_all_lanes(self):
-        c = self.write_ov({"default": {"limit": 160_000}})
-        self.assertEqual(self.sub_run(c), "")                               # 100k: wrap-up is 130k now
-        self.set_ctx(self.sub_tp, 131_000)
-        self.assertIn("context 131k: 29k left before your 160k limit", self.sub_run(c))
+        c = self.write_ov({"default": {"limit": 200_000}})
+        self.set_ctx(self.sub_tp, 140_000)                                  # past the config's wrap-up point (130k)
+        self.assertEqual(self.sub_run(c), "")                               # wrap-up is 180k now
+        self.set_ctx(self.sub_tp, 181_000)
+        self.assertIn("context 181k: 19k left before your 200k limit", self.sub_run(c))
 
     def test_coordinator_override(self):
         c = self.write_ov({"coordinator": {"compact_at": 250_000, "until": UNTIL_LATER}})
         self.assertEqual(cg.run(self.inp(), self.args(), c, NOW), "")       # 240k < 250k
-        after = cg.iso_to_epoch("2026-10-13T14:00:01Z")                     # expired: 190k again
+        after = cg.iso_to_epoch("2026-10-13T14:00:01Z")                     # expired: 180k again
         self.assertIn("240k: compact", self.note(cg.run(self.inp(), self.args(), c, after)))
 
     def assert_config_limits(self, c, now=NOW):
-        self.assertIn("context 100k: 20k left before your 120k limit", self.sub_run(c, now))
+        self.set_ctx(self.sub_tp, 140_000)             # past the config's wrap-up point; an override that
+                                                       # was applied by mistake would answer differently
+        self.assertIn("context 140k: 10k left before your 150k limit", self.sub_run(c, now))
 
     def test_expired_entry_is_ignored(self):
         c = self.write_ov({"agents": {AID: {"limit": 200_000, "until": UNTIL_LATER}}})
@@ -302,19 +311,19 @@ class TestOverrides(Base):
 
     def test_agent_is_told_when_its_limit_changes(self):
         c = self.cfg()
-        self.set_ctx(self.sub_tp, 125_000)
-        self.assertIn("125k is past your 120k limit", self.sub_run(c))      # told to stop at 120k
-        c = self.write_ov({"default": {"limit": 160_000}})                   # the coordinator raises it
+        self.set_ctx(self.sub_tp, 155_000)
+        self.assertIn("155k is past your 150k limit", self.sub_run(c))      # told to stop at 150k
+        c = self.write_ov({"default": {"limit": 200_000}})                   # the coordinator raises it
         out = self.sub_run(c, NOW + 5)
-        self.assertIn("the coordinator changed your context limit from 120k to 160k (wrap-up from 130k)", out)
-        self.assertNotIn("left before", out)                                 # 125k is below the new wrap-up
+        self.assertIn("the coordinator changed your context limit from 150k to 200k (wrap-up from 180k)", out)
+        self.assertNotIn("left before", out)                                 # 155k is below the new wrap-up
         self.assertEqual(self.sub_run(c, NOW + 6), "")                       # told once
-        self.set_ctx(self.sub_tp, 135_000)
-        self.assertIn("context 135k: 25k left before your 160k limit", self.sub_run(c, NOW + 7))
+        self.set_ctx(self.sub_tp, 185_000)
+        self.assertIn("context 185k: 15k left before your 200k limit", self.sub_run(c, NOW + 7))
         c = self.write_ov({"default": {"limit": 100_000}})                   # lowered below the context
         out = self.sub_run(c, NOW + 8)
-        self.assertIn("changed your context limit from 160k to 100k", out)
-        self.assertIn("135k is past your 100k limit: stop now", out)
+        self.assertIn("changed your context limit from 200k to 100k", out)
+        self.assertIn("185k is past your 100k limit: stop now", out)
 
     def test_first_call_records_the_limit_silently(self):
         c = self.cfg(lane_limit=400_000)
@@ -349,13 +358,13 @@ class TestControl(Base):
         self.assertEqual(d["coordinator"]["compact_at"], 250_000)
         now = time.time()
         ovs = cg.load_overrides(c, now)
-        self.assertEqual(cg.resolve(c, ovs, AID, "engineer")[:3], (120_000, 170_000, 200_000))
-        self.assertEqual(cg.resolve(c, ovs, "x", "batch-worker")[1:3], (50_000, 80_000))
-        self.assertEqual(cg.resolve(c, ovs, "x", "engineer")[1:3], (130_000, 160_000))
+        self.assertEqual(cg.resolve(c, ovs, AID, "engineer")[:3], (120_000, 180_000, 200_000))
+        self.assertEqual(cg.resolve(c, ovs, "x", "batch-worker")[1:3], (60_000, 80_000))
+        self.assertEqual(cg.resolve(c, ovs, "x", "engineer")[1:3], (140_000, 160_000))
         self.assertEqual(cg.compact_point(c, ovs), 250_000)
-        self.assertEqual(cg.resolve(c, cg.load_overrides(c, now + 4 * 3600), "x", "engineer")[2], 120_000)
+        self.assertEqual(cg.resolve(c, cg.load_overrides(c, now + 4 * 3600), "x", "engineer")[2], 150_000)
         out = self.ctl("show").stdout
-        self.assertIn("in effect now: lanes limit 160k, wrap-up from 130k (default)", out)
+        self.assertIn("in effect now: lanes limit 160k, wrap-up from 140k (default)", out)
         self.assertIn("agent " + AID, out)
         self.assertEqual(self.ctl("clear", "--agent", AID).returncode, 0)
         self.assertNotIn("agents", self.ov_file())

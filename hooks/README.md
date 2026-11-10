@@ -89,11 +89,11 @@ keys are optional.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `lane_limit` | 120000 | Context limit of a sub-agent. 0 = no context notices for sub-agents. |
-| `wrapup_margin` | 30000 | The wrap-up notice comes this many tokens before the limit. |
-| `agent_types` | `{}` | Limits per agent type: `{"batch-worker": {"limit": 80000, "wrapup_margin": 20000}}` |
+| `lane_limit` | 150000 | Context limit of a sub-agent. 0 = no context notices for sub-agents. |
+| `wrapup_margin` | 20000 | The wrap-up notice comes this many tokens before the limit. |
+| `agent_types` | `{}` | Limits per agent type: `{"batch-worker": {"limit": 80000, "wrapup_margin": 10000}}` |
 | `skip_agent_types` | `[]` | Agent types the hook leaves alone. |
-| `coordinator_compact_at` | 190000 | Compaction notice for the main session. 0 = off. |
+| `coordinator_compact_at` | 180000 | Compaction notice for the main session. 0 = off. |
 | `overrides_file` | `context_guard.overrides.json` | The dynamic layer, see below. |
 | `wait_cap_ms` | 270000 | Longest foreground Bash timeout. |
 | `wait_cap_applies_to_coordinator` | false | Apply the wait cap to the main session too. |
@@ -104,7 +104,7 @@ keys are optional.
 | `state_dir` | `~/.cache/context-guard` | One small state file per (session, agent). Files older than 7 days are removed when the guard next gives a notice. |
 | `log` | off | A JSON-lines file with one line per notice and denial. |
 
-The limits by workload (80k for many small tasks, 120k for a standard lane, 160k for long and
+The limits by workload (80k for many small tasks, 150k for a standard lane, 160k for long and
 complex work) and the reasons are in the playbook, R-ctx-3.
 
 ### Changing limits while agents run: `context_guard_ctl.py`

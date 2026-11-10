@@ -181,20 +181,21 @@ point (R-ctx-3) get no new tasks.
   200k while a fresh general-purpose agent starts at ~63k and a lean one near 10k `[U][I]`.
 - Check: wakes of agents past their wrap-up point are flagged in the sweep.
 
-**R-ctx-3. One context limit per lane: 120k by default, set by workload, adjustable by the
+**R-ctx-3. One context limit per lane: 150k by default, set by workload, adjustable by the
 coordinator.** Size work in phases that end in a deliverable.
-- Default: a lane hard-stops at 120k context. From 30k before its limit it finishes the current
-  step and starts nothing new (lanes overshoot a trigger by 30-40k `[M]`). It keeps a ROLLING
-  HANDOFF block at the top of its notes, updated at every milestone commit, so the stop loses
-  nothing. One lane = one deliverable.
+- Default: a lane hard-stops at 150k context. From 20k before its limit (130k) it finishes the
+  current step and starts nothing new. Lanes overshoot a trigger by 30-40k `[M]`, so a lane can
+  end past its limit; where that is too late, widen the margin or lower the limit. It keeps a
+  ROLLING HANDOFF block at the top of its notes, updated at every milestone commit, so the stop
+  loses nothing. One lane = one deliverable.
 - Set the limit by workload, per project and per lane (in the brief):
 
   | workload | limit | basis |
   |---|---|---|
   | many short, similar tasks on a lean agent file (fan-out judging, page fixes, extraction) | 80k, plus `maxTurns` in the agent file | `[O]` estimate; here the limit is a guard against runaways, and tasks should end far below it |
-  | standard lane with one deliverable (default) | 120k | `[M]` 7 lanes told to hand off at 200k all ran out at 132-150k; lanes with 100-110k triggers ended at 130-158k |
+  | standard lane with one deliverable (default) | 150k | `[U]` a chosen setting, not a measured optimum. Measured `[M]`: 7 lanes told to hand off at 200k all ran out at 132-150k; lanes with 100-110k triggers ended at 130-158k. Where your lanes run out before their limit, lower it |
   | long, complex work that must hold much context at once (design, cross-module change, multi-host build setup) | 160k | `[I]` 3 of 6 agents at 120-150k handed off during setup with no result |
-  | coordinator | self-compacts from ~190k (R-loop-6) | `[U]` |
+  | coordinator | self-compacts from ~180k (R-loop-6) | `[U]` |
   | cheap-model reader | prompt < 100k (R-route-2) | `[P]` |
 
 - The coordinator may raise or lower a limit: for one lane (in the brief), for a limited time (a
@@ -206,11 +207,11 @@ coordinator.** Size work in phases that end in a deliverable.
   needs more than 20 orientation calls, when a defect traces to a handoff, or when a live lane is
   above 70 % of its limit while still in setup. Lower it when the project's tasks are small.
 - Before raising, check the brief: one deliverable, at most 2-3 steps, the exact files and lines
-  to read. Three lanes in a row hit 120k through reading alone `[I]`; a higher limit would only
-  have bought more reading. Raise when the brief is already tight and the task itself needs the
-  context.
-- What a raise costs: cost per call is ~0.1 x context, so 160k costs about a third more per call
-  than 120k; a handoff costs ~5-20 orientation calls plus the note `[M]`. Past 200k the evidence
+  to read. Three lanes in a row hit their 120k limit through reading alone `[I]`; a higher limit
+  would only have bought more reading. Raise when the brief is already tight and the task itself
+  needs the context.
+- What a raise costs: cost per call is ~0.1 x context, so 200k costs about a third more per call
+  than 150k; a handoff costs ~5-20 orientation calls plus the note `[M]`. Past 200k the evidence
   is against it: phases past 400k cost $28-33 each, and two that overran ended in non-compiling
   or regressing work `[M]` (correlation, n = 3). Ask the user before going there.
 - An agent that starts at ~63k (general-purpose) has ~50k less room under the same limit: give it
@@ -605,7 +606,7 @@ without result > 20 min).
   misses). With `--config` it uses the context guard's limits, run-time changes included.
 
 **R-loop-6. Self-compaction of the coordinator.** Compact at natural points (after a merge push,
-after a lane report is fully processed) from ~190k context `[U][M]` (it had been 230-300k; the
+after a lane report is fully processed) from ~180k context `[U][M]` (it had been 230-300k; the
 coordinator was 15-20 % of spend at avg 156k/call). Never compact with an unprocessed agent
 notification or in the middle of a discussion with the user. The coordinator does not hand off
 to a successor coordinator; it continues through compactions `[U]`.
@@ -1122,7 +1123,7 @@ these: `git status --short`, then wait or stash.
 | co-tenant alert wakes | expensive wakes with no allowed action | mute by owner, digest file | R-mon-9 |
 | one check per call | 100+ calls in a lane's first 20 min | batch independent checks | R-ctx-10 |
 | stale stopgap | a config workaround outlives its reason and kills later jobs | every stopgap gets a hints line with its watch condition and an undo trigger | R-loop-4 |
-| lane dies mid-step | handoff rule at 200k, lanes run out at 132-150k | one limit per lane, 120k default, rolling handoff | R-ctx-3 |
+| lane dies mid-step | handoff rule at 200k, lanes run out at 132-150k | one limit per lane with a wrap-up point before it, rolling handoff | R-ctx-3 |
 | heavy start | every fan-out agent starts at ~63k | lean agent file | R-ctx-11 |
 | zombie predecessor | a closed lane commits in its successor's worktree | "LANE CLOSED" in the launch message | R-ho-9 |
 | orienting successor | 48 calls of re-reading, one commit | no-orientation successor briefs | R-ho-10 |

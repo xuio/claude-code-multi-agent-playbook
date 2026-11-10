@@ -9,7 +9,7 @@ A lane in an auto-cleaned worktree commits its notes on its branch instead (R-ho
 
 1. Write the goal file: targets with numbers and a date, the goal metric, what counts as correct,
    what the user reserves for themselves (R-user-6). Keep it short. Choose the lane context limit
-   for this project's workload (R-ctx-3: 80k for many short tasks, 120k by default, 160k for long,
+   for this project's workload (R-ctx-3: 80k for many short tasks, 150k by default, 160k for long,
    complex work) and write it into the rules block.
 2. Create the agent definitions (section 6) and restart the session so they load (R-route-6).
 3. Create the files in section 2 (hints, duties registry, findings, resume sheet, rules block,
@@ -150,7 +150,7 @@ Keep each line one rule with its reason in brackets. Template (generalize the pa
 - Never cd in Bash (absolute paths, git -C). Every clock time comes from `date`.
 - Private names never in commits or reports. No push unless you are the merge steward. No task suggestions in the user's interface.
 - Never compact your own context (the compaction state is shared with the coordinator session).
-- Context: your brief names your limit (default 120k). Keep a ROLLING "## HANDOFF (<name>)" block at the top of your notes, updated at every milestone commit (<= 10k: state, commits, job ids, numbers, numbered next steps; details by path). From 30k before the limit finish the current step and start nothing new. At the limit, or at your CALL BUDGET, stop your waiters and end with "HANDOFF ready".
+- Context: your brief names your limit (default 150k). Keep a ROLLING "## HANDOFF (<name>)" block at the top of your notes, updated at every milestone commit (<= 10k: state, commits, job ids, numbers, numbered next steps; details by path). From 20k before the limit finish the current step and start nothing new. At the limit, or at your CALL BUDGET, stop your waiters and end with "HANDOFF ready".
 - CALL BUDGET: your brief names a number of calls to the first commit or submit. Tell main at ~80 % and hand off at the budget.
 - Lean starts: successors read ONLY the HANDOFF section and the passages the next step needs; target <= 80k at first report.
 - After a HANDOFF the successor owns all data, jobs and cleanup; the predecessor deletes nothing. Successors run `queue adopt <id> --by <me>` for every live job first.
@@ -193,7 +193,7 @@ STEPS (each with a done-condition):
  2. <...>
 EVIDENCE: <exact job command(s)>, host <h>, client env <VARS>, slots <n>, --dir <d>.
 ACCEPT RULE (set before results): <criterion that closes the item>.
-CONTEXT: limit <k> (wrap-up from 30k before it; keep the "## HANDOFF (<name>)" block rolling). CALL BUDGET: <n> calls to the first commit or submit.
+CONTEXT: limit <k> (wrap-up from 20k before it; keep the "## HANDOFF (<name>)" block rolling). CALL BUDGET: <n> calls to the first commit or submit.
 REPORT to main (<= 250 words): Flags, what changed (commits), evidence (job ids, numbers with commit+scope), lane (FAST/TRAIN), Safety, Follow-ups.
 ```
 

@@ -35,9 +35,9 @@ import time
 from types import SimpleNamespace
 
 DEFAULTS = {
-    "lane_limit": 120_000,              # sub-agent: stop here (0 = no context notices for sub-agents)
-    "wrapup_margin": 30_000,            # sub-agent: wrap-up notice this many tokens before the limit
-    "coordinator_compact_at": 190_000,  # main session: compaction notice (0 = off)
+    "lane_limit": 150_000,              # sub-agent: stop here (0 = no context notices for sub-agents)
+    "wrapup_margin": 20_000,            # sub-agent: wrap-up notice this many tokens before the limit
+    "coordinator_compact_at": 180_000,  # main session: compaction notice (0 = off)
     "agent_types": {},                  # {"<agent type>": {"limit": int, "wrapup_margin": int}}
     "skip_agent_types": [],             # agent types this hook leaves alone
     "overrides_file": "context_guard.overrides.json",   # the coordinator's dynamic layer, see load_overrides()

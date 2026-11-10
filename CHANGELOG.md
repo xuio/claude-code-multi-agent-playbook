@@ -43,3 +43,15 @@
   prompt starts before the compaction ran; after six refused calls the plugin ends the turn
   itself. Options `blockToolsAfterRequest` and `allowAfterRequest`.
 - R-loop-6 names this behaviour.
+
+## 2026-11-10: default limits 150k / 130k / 180k, self-compact 0.5.1
+
+- The default lane limit is 150k with the wrap-up point at 130k (it was 120k and 90k), and the
+  coordinator's compaction point is 180k (it was 190k): R-ctx-3, R-loop-6, the context guard's
+  built-in defaults, the agent scan's fallback values, the starter kit and the examples. This is
+  the maintainer's chosen setting, not a new measurement; the measured numbers in R-ctx-3 are
+  unchanged. A project sets its own values in `context_guard.json`, and the coordinator changes
+  them at run time with `context_guard_ctl.py`.
+- self-compact 0.5.1: `burstLimit` and `minContextTokens` default to 0 (off). They stay as
+  options for sessions that fall into a compact-resume loop. The refusal of other tool calls
+  after a request stays on by default.

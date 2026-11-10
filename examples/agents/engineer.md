@@ -15,7 +15,7 @@ Working style
 Context and handoff
 - Your brief names your context limit and your CALL BUDGET. Tell main at ~80 % of the budget.
 - Keep a notes file with a rolling `## HANDOFF (<name>)` block on top (state, commits, live job ids, numbers, numbered next steps), updated at every milestone commit.
-- From 30k before the limit finish the current step and start nothing new. At the limit or the budget, stop your waiters and end with "HANDOFF ready".
+- From 20k before the limit finish the current step and start nothing new. At the limit or the budget, stop your waiters and end with "HANDOFF ready".
 
 Waiting
 - The prompt cache lives 5 minutes. Waits up to ~45 min: poll in the foreground, at most 240 s per call. Longer: update the HANDOFF, tell main and end your turn.
